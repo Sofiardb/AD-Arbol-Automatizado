@@ -1,19 +1,22 @@
-﻿#Requires -Version 5.1
+﻿#Requires -Version 3.0
 <#
 .SYNOPSIS
-    Paso 5 – Acceso de cuentas de un dominio a recursos del otro con AGUDLP (objetivo específico 5).
+    Paso 5 – Acceso de cuentas del dominio padre a recursos del dominio hijo con AGUDLP (objetivo específico 5).
 
 .DESCRIPTION
-    A  Cuentas -> Grupos Globales (G): en CADA dominio, un grupo global por área
-       (GG-ANDINA-Finanzas, GG-VENTAS-Comerciales, ...) con exactamente los usuarios del área.
-    DL Grupos de Dominio Local (DL): en el dominio RAÍZ (donde está el recurso), uno por recurso y nivel
-       (DL-Lista-Precios-Lectura, DL-Lista-Precios-Modificar, ...). Sus miembros son grupos globales de
-       ambos dominios: un DL puede contener grupos globales de cualquier dominio del bosque, por eso
-       las cuentas del dominio hijo llegan a los recursos del padre a través de la confianza padre-hijo.
-    P  Permisos (enfoque 2): en SRV-ARCHIVOS, cada recurso compartido y su carpeta NTFS reciben permisos
-       SOLO para los DL del recurso (Lectura -> Read / ReadAndExecute; Modificar -> Change / Modify),
-       más Administradores y SYSTEM. Se quita "Todos" (Everyone) del recurso compartido, se deshabilita
-       la herencia NTFS y se activa la enumeración basada en el acceso (ABE).
+    Las cuentas están centralizadas en el dominio PADRE y los recursos en el dominio HIJO;
+    los permisos se asignan en ese único sentido.
+
+    A -> G   en el PADRE (DC-RAIZ): un grupo global por área (GG-ANDINA-Finanzas, ...) con
+             exactamente las cuentas del área.
+    G -> DL  en el HIJO (DC-HIJO): un grupo de dominio local por recurso y nivel
+             (DL-Lista-Precios-Lectura, DL-Lista-Precios-Modificar, ...). Sus miembros son grupos
+             globales del padre: un grupo de dominio local admite grupos globales de cualquier
+             dominio del bosque, y la confianza padre-hijo permite resolverlos.
+    DL -> P  en DC-HIJO: cada carpeta compartida y su NTFS reciben permisos SOLO para los DL del
+             recurso (enfoque 2: Lectura -> Read / ReadAndExecute; Modificar -> Change / Modify),
+             más Administradores y SYSTEM. Se quita "Todos" (Everyone), se deshabilita la herencia
+             NTFS y se activa la enumeración basada en el acceso (ABE).
 
     La pertenencia y los permisos se reconcilian: lo que sobra se quita y lo que falta se agrega,
     de modo que el resultado coincide exactamente con accesos.csv.
@@ -31,17 +34,13 @@ $Diseno = Get-DisenoParaPaso -Diseno $Diseno -RutaSalida $RutaSalida
 
 $srvRaiz     = Get-ServidorDiseno -Diseno $Diseno -Rol DCRaiz
 $srvHijo     = Get-ServidorDiseno -Diseno $Diseno -Rol DCHijo
-$srvArchivos = Get-ServidorDiseno -Diseno $Diseno -Rol Archivos
 $domRaiz     = $Diseno.Dominios.Raiz
 $domHijo     = $Diseno.Dominios.Hijo
 
 # Datos simples para los bloques remotos
-$ggPorDominio = @{}
-foreach ($clave in 'Raiz', 'Hijo') {
-    $ggPorDominio[$clave] = @($Diseno.GruposGlobales | Where-Object { $_.Dominio -eq $clave } | ForEach-Object {
-            [pscustomobject]@{ Nombre = $_.Nombre; OU = $_.OU; Descripcion = $_.Descripcion; Miembros = @($_.Miembros) }
-        })
-}
+$ggs = @($Diseno.GruposGlobales | ForEach-Object {
+        [pscustomobject]@{ Nombre = $_.Nombre; OU = $_.OU; Descripcion = $_.Descripcion; Miembros = @($_.Miembros) }
+    })
 $dls = @($Diseno.GruposDL | ForEach-Object {
         [pscustomobject]@{
             Nombre = $_.Nombre; OU = $_.OU; Descripcion = $_.Descripcion
@@ -60,16 +59,13 @@ $recursos = @($Diseno.Recursos | ForEach-Object {
 #  Simulación
 # =====================================================================
 if ($WhatIfPreference) {
-    foreach ($clave in 'Raiz', 'Hijo') {
-        $d = $Diseno.Dominios.$clave
-        Write-Log "Grupos globales en $($d.FQDN)"
-        foreach ($g in $ggPorDominio[$clave]) { Write-Plan "$($g.Nombre) (Global) en $($g.OU): $(@($g.Miembros).Count) miembros" }
-    }
-    Write-Log "Grupos de dominio local en $($domRaiz.FQDN)"
-    foreach ($g in $dls) { Write-Plan "$($g.Nombre) (DomainLocal) <- $(@($g.Miembros | ForEach-Object { $_.Grupo }) -join ', ')" }
-    Write-Log "Recursos en $($srvArchivos.Nombre)"
+    Write-Log "A -> G: grupos globales en $($domRaiz.FQDN) (padre, cuentas)"
+    foreach ($g in $ggs) { Write-Plan "$($g.Nombre) (Global) en $($g.OU): $(@($g.Miembros).Count) miembros" }
+    Write-Log "G -> DL: grupos de dominio local en $($domHijo.FQDN) (hijo, recursos)"
+    foreach ($g in $dls) { Write-Plan "$($g.Nombre) (DomainLocal) <- $(@($g.Miembros | ForEach-Object { "$($domRaiz.NetBIOS)\$($_.Grupo)" }) -join ', ')" }
+    Write-Log "DL -> P: recursos en $($srvHijo.Nombre)"
     foreach ($r in $recursos) {
-        Write-Plan "\\$($srvArchivos.Nombre)\$($r.Nombre) ($($r.RutaLocal)) · ABE · sin 'Todos' · herencia NTFS deshabilitada"
+        Write-Plan "\\$($srvHijo.Nombre)\$($r.Nombre) ($($r.RutaLocal)) · ABE · sin 'Todos' · herencia NTFS deshabilitada"
         Write-Plan "    compartido: $(@($r.Compartido | ForEach-Object { "$($_.Cuenta)=$($_.Permiso)" }) -join '; ')"
         Write-Plan "    NTFS:       $(@($r.NTFS | ForEach-Object { "$($_.Cuenta)=$($_.Permiso)" }) -join '; ')"
     }
@@ -122,7 +118,7 @@ $bloqueGruposDL = {
         }
         elseif ([string]$grupo.GroupScope -ne 'DomainLocal') { throw "El grupo $($g.Nombre) existe con ámbito $($grupo.GroupScope) (se esperaba DomainLocal)." }
 
-        # Grupos globales miembros: los del dominio hijo se buscan en SU dominio (credencial explícita: segundo salto)
+        # Grupos globales miembros: los del otro dominio (padre) se buscan en SU dominio (credencial explícita: segundo salto)
         $deseados = @{}
         foreach ($m in $g.Miembros) {
             $clave = "$($m.DominioFQDN)|$($m.Grupo)"
@@ -137,7 +133,7 @@ $bloqueGruposDL = {
         $quitar  = @($actuales | Where-Object { -not $deseados.ContainsKey($_) })
 
         foreach ($dn in $agregar) {
-            # Un grupo recién creado en el dominio hijo puede tardar en llegar al catálogo global: se reintenta
+            # Un grupo recién creado en el otro dominio puede tardar en llegar al catálogo global: se reintenta
             $ok = $false
             for ($i = 1; $i -le 10 -and -not $ok; $i++) {
                 try { Set-ADGroup -Identity $g.Nombre -Add @{ member = $deseados[$dn].DistinguishedName }; $ok = $true }
@@ -153,6 +149,11 @@ $bloqueGruposDL = {
 $bloqueRecursos = {
     param([object[]]$Recursos, [string]$Empresa)
     $ErrorActionPreference = 'Stop'
+    # En Windows Server 2012 la política de ejecución puede impedir que se cargue el módulo SmbShare
+    # en una sesión remota: se habilita solo para esta sesión y se carga explícitamente.
+    try { Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force -ErrorAction Stop } catch { }
+    try { Import-Module SmbShare -ErrorAction Stop }
+    catch { throw "No se pudo cargar el módulo SmbShare en $env:COMPUTERNAME ($($_.Exception.Message)). Política de ejecución: $(Get-ExecutionPolicy -List | Out-String)" }
 
     # Cuentas integradas por SID: funciona aunque Windows esté en otro idioma (Administradores, Todos, ...)
     $sidConocidos = @{ 'BUILTIN\Administrators' = 'S-1-5-32-544'; 'NT AUTHORITY\SYSTEM' = 'S-1-5-18'; 'Everyone' = 'S-1-1-0' }
@@ -238,17 +239,14 @@ $bloqueRecursos = {
 $resultados = New-Object System.Collections.Generic.List[object]
 function Add-Resultados($lista) { foreach ($x in @($lista)) { $resultados.Add(($x | Select-Object Tipo, Objeto, Accion, Agregados, Quitados, Miembros)) } }
 
-Write-Log "A-G: grupos globales en $($domRaiz.FQDN)" -Nivel Paso
-Add-Resultados (Invoke-EnServidor -Equipo $srvRaiz.IPFinal -Credencial $cred.Raiz -Bloque $bloqueGruposGlobales -Argumentos @(, $ggPorDominio.Raiz) -Descripcion "$($ggPorDominio.Raiz.Count) grupos globales")
+Write-Log "A -> G: grupos globales en $($domRaiz.FQDN) (padre, cuentas)" -Nivel Paso
+Add-Resultados (Invoke-EnServidor -Equipo $srvRaiz.IPFinal -Credencial $cred.Raiz -Bloque $bloqueGruposGlobales -Argumentos @(, $ggs) -Descripcion "$($ggs.Count) grupos globales")
 
-Write-Log "A-G: grupos globales en $($domHijo.FQDN)" -Nivel Paso
-Add-Resultados (Invoke-EnServidor -Equipo $srvHijo.IPFinal -Credencial $cred.Hijo -Bloque $bloqueGruposGlobales -Argumentos @(, $ggPorDominio.Hijo) -Descripcion "$($ggPorDominio.Hijo.Count) grupos globales")
+Write-Log "G -> DL: grupos de dominio local en $($domHijo.FQDN) (hijo, recursos) con grupos globales del padre como miembros" -Nivel Paso
+Add-Resultados (Invoke-EnServidor -Equipo $srvHijo.IPFinal -Credencial $cred.Hijo -Bloque $bloqueGruposDL -Argumentos @($dls, $domHijo.FQDN, $cred.Raiz) -Descripcion "$($dls.Count) grupos de dominio local")
 
-Write-Log "G-DL: grupos de dominio local en $($domRaiz.FQDN) con miembros de ambos dominios" -Nivel Paso
-Add-Resultados (Invoke-EnServidor -Equipo $srvRaiz.IPFinal -Credencial $cred.Raiz -Bloque $bloqueGruposDL -Argumentos @($dls, $domRaiz.FQDN, $cred.Raiz) -Descripcion "$($dls.Count) grupos de dominio local")
-
-Write-Log "DL-P: recursos compartidos y NTFS en $($srvArchivos.Nombre)" -Nivel Paso
-Add-Resultados (Invoke-EnServidor -Equipo $srvArchivos.IPFinal -Credencial $cred.Raiz -Bloque $bloqueRecursos -Argumentos @($recursos, [string]$Diseno.Parametros.Empresa) -Descripcion "$($recursos.Count) recursos")
+Write-Log "DL -> P: recursos compartidos y NTFS en $($srvHijo.Nombre)" -Nivel Paso
+Add-Resultados (Invoke-EnServidor -Equipo $srvHijo.IPFinal -Credencial $cred.Hijo -Bloque $bloqueRecursos -Argumentos @($recursos, [string]$Diseno.Parametros.Empresa) -Descripcion "$($recursos.Count) recursos")
 
 foreach ($r in $resultados) {
     $texto = "$($r.Tipo) $($r.Objeto): $($r.Accion)"

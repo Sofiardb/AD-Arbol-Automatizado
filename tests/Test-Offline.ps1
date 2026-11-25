@@ -1,4 +1,4 @@
-﻿#Requires -Version 5.1
+﻿#Requires -Version 3.0
 <#
 .SYNOPSIS
     Pruebas sin laboratorio: verifican la lógica del proyecto en cualquier equipo con PowerShell
@@ -23,7 +23,7 @@ $ErrorActionPreference = 'Stop'
 $raiz = Split-Path $PSScriptRoot -Parent
 Import-Module (Join-Path $raiz 'modules/00-Comun/Comun.psm1') -Force -DisableNameChecking
 Import-Module (Join-Path $raiz 'modules/01-Diseno/Diseno.psm1') -Force -DisableNameChecking
-Import-Module (Join-Path $raiz 'modules/06-Validacion/Validacion.psm1') -Force -DisableNameChecking
+Import-Module (Join-Path $raiz 'modules/07-Validacion/Validacion.psm1') -Force -DisableNameChecking
 
 $script:Total = 0; $script:Fallidas = 0
 function Assert {
@@ -55,8 +55,8 @@ Assert ($val.Errores.Count -eq 0) "La configuración de ejemplo es válida ($($v
 
 $malo = @{ Lab = $config.Lab.Clone(); Usuarios = @($config.Usuarios); Accesos = @($config.Accesos) }
 $malo.Lab.Gateway = '10.0.0.1'
-$malo.Lab.DominioHijo = 'ventas.norte'
-$malo.Accesos = @($config.Accesos) + [pscustomobject]@{ Recurso = 'Ventas 2024'; Dominio = 'Hijo'; Area = 'Inexistente'; Nivel = 'Total' }
+$malo.Lab.DominioHijo = 'recursos.norte'
+$malo.Accesos = @($config.Accesos) + [pscustomobject]@{ Recurso = 'Ventas 2024'; Area = 'Inexistente'; Nivel = 'Total' }
 $val = Test-ConfigLab -Config $malo
 Assert ($val.Errores.Count -ge 5) "Una configuración con 5 errores se rechaza ($($val.Errores.Count) errores detectados)"
 
@@ -64,11 +64,16 @@ $diseno = Get-DisenoDerivado -Config $config
 Assert (@($diseno.Usuarios).Count -eq @($config.Usuarios).Count) "Diseño: $(@($diseno.Usuarios).Count) cuentas"
 Assert (@($diseno.GruposGlobales).Count -eq 11 -and @($diseno.GruposDL).Count -eq 20 -and @($diseno.Recursos).Count -eq 10) 'Diseño: 11 grupos globales, 20 de dominio local, 10 recursos'
 $jp = @($diseno.Usuarios | Where-Object { $_.Sam -like 'jperez*' })
-Assert ($jp.Count -eq 2 -and $jp[0].UPN -eq 'jperez@ventas.andina.local') 'Diseño: UPN en el dominio hijo'
-$cruzados = @($diseno.GruposDL | ForEach-Object { $_.Miembros } | Where-Object { $_.DominioFQDN -eq 'ventas.andina.local' }).Count
-Assert ($cruzados -gt 0) "Diseño: $cruzados anidamientos de grupos globales del hijo en DL del raíz"
+Assert ($jp.Count -eq 2 -and $jp[0].UPN -eq 'jperez@andina.local') 'Diseño: todas las cuentas y su UPN en el dominio padre'
+Assert (@($diseno.GruposGlobales | Where-Object Dominio -ne 'Raiz').Count -eq 0 -and @($diseno.GruposDL | Where-Object Dominio -ne 'Hijo').Count -eq 0) 'Diseño: grupos globales en el padre y de dominio local en el hijo'
+$cruzados = @($diseno.GruposDL | ForEach-Object { $_.Miembros } | Where-Object { $_.DominioFQDN -eq 'andina.local' }).Count
+Assert ($cruzados -eq @($config.Accesos).Count) "Diseño: $cruzados anidamientos de grupos globales del padre en DL del hijo (uno por fila de accesos.csv)"
+Assert (@($diseno.Recursos | Where-Object { $_.Servidor -ne 'DC-HIJO' -or $_.UNC -notlike '\\dc-hijo.recursos.andina.local\*' }).Count -eq 0) 'Diseño: los recursos están en DC-HIJO (dominio de recursos)'
+Assert ($diseno.Cliente.Nombre -eq 'CLIENTE01' -and $diseno.Cliente.Dominio -eq 'andina.local' -and $diseno.Cliente.IPFinal -eq $diseno.Cliente.IPActual) 'Diseño: cliente CLIENTE01 en el dominio padre, conserva su IP'
+$esc = @($diseno.Demo.Escenas)
+Assert ($esc.Count -ge 3 -and $esc[0].Nivel -eq 'Modificar' -and $esc[1].Nivel -eq 'Lectura' -and $esc[2].Nivel -eq 'SinAcceso' -and $esc[0].Recurso -eq $esc[2].Recurso) "Diseño: escenas de la demo sobre $($esc[0].Recurso) (Modificar / Lectura / sin acceso)"
 
-# El diseño usado por los pasos 2 a 6 se lee de JSON: se prueba con la misma forma
+# El diseño usado por los pasos 2 a 7 se lee de JSON: se prueba con la misma forma
 $diseno = ($diseno | ConvertTo-Json -Depth 10 | ConvertFrom-Json)
 
 # =====================================================================
@@ -78,6 +83,9 @@ $r = $diseno.Dominios.Raiz; $h = $diseno.Dominios.Hijo
 $srvRaiz = Get-ServidorDiseno -Diseno $diseno -Rol DCRaiz
 $srvHijo = Get-ServidorDiseno -Diseno $diseno -Rol DCHijo
 
+# Nivel funcional que tendría un bosque creado con la configuración (lab.psd1 puede indicar 2012, 2012 R2 o 2016+)
+$script:Modo = @{ Win2012 = 'Windows2012'; Win2012R2 = 'Windows2012R2'; WinThreshold = 'Windows2016'; Default = 'Windows2016' }[[string]$diseno.Parametros.NivelFuncional]
+
 function New-EstadoAD([string]$Clave) {
     $d = $diseno.Dominios.$Clave
     $grupos = @()
@@ -85,7 +93,7 @@ function New-EstadoAD([string]$Clave) {
         $miembros = @($g.Miembros | ForEach-Object { $s = $_; $u = @($diseno.Usuarios | Where-Object { $_.Dominio -eq $Clave -and $_.Sam -eq $s })[0]; "CN=$($u.CN),$($u.OU)" })
         $grupos += [pscustomobject]@{ Nombre = $g.Nombre; Ambito = 'Global'; Categoria = 'Security'; DN = "CN=$($g.Nombre),$($g.OU)"; Miembros = $miembros }
     }
-    if ($Clave -eq 'Raiz') {
+    if ($Clave -eq 'Hijo') {
         foreach ($g in @($diseno.GruposDL)) {
             $miembros = @($g.Miembros | ForEach-Object { $n = $_.Grupo; $gg = @($diseno.GruposGlobales | Where-Object { $_.Nombre -eq $n })[0]; "CN=$($gg.Nombre),$($gg.OU)" })
             $grupos += [pscustomobject]@{ Nombre = $g.Nombre; Ambito = 'DomainLocal'; Categoria = 'Security'; DN = "CN=$($g.Nombre),$($g.OU)"; Miembros = $miembros }
@@ -95,8 +103,8 @@ function New-EstadoAD([string]$Clave) {
         [pscustomobject]@{ Servidor = 'DC'; Tipo = 'SRV'; Consulta = "_ldap._tcp.dc._msdcs.$($d.FQDN)"; Esperado = ''; Obtenido = 'dc:389'; OK = $true; Critica = $true }
     )
     [pscustomobject]@{
-        Dominio = [pscustomobject]@{ DNSRoot = $d.FQDN; NetBIOSName = $d.NetBIOS; ParentDomain = $(if ($Clave -eq 'Hijo') { $r.FQDN } else { '' }); DomainMode = 'Windows2016Domain'; PDCEmulator = 'x'; RIDMaster = 'x'; InfrastructureMaster = 'x' }
-        Bosque  = [pscustomobject]@{ RootDomain = $r.FQDN; Domains = @($r.FQDN, $h.FQDN); GlobalCatalogs = @($srvRaiz.FQDN.ToUpper()); ForestMode = 'Windows2016Forest'; SchemaMaster = 'x'; DomainNamingMaster = 'x' }
+        Dominio = [pscustomobject]@{ DNSRoot = $d.FQDN; NetBIOSName = $d.NetBIOS; ParentDomain = $(if ($Clave -eq 'Hijo') { $r.FQDN } else { '' }); DomainMode = "$($script:Modo)Domain"; PDCEmulator = 'x'; RIDMaster = 'x'; InfrastructureMaster = 'x' }
+        Bosque  = [pscustomobject]@{ RootDomain = $r.FQDN; Domains = @($r.FQDN, $h.FQDN); GlobalCatalogs = @($srvRaiz.FQDN.ToUpper()); ForestMode = "$($script:Modo)Forest"; SchemaMaster = 'x'; DomainNamingMaster = 'x' }
         DC      = [pscustomobject]@{ HostName = "DC-$Clave" }
         Confianzas = @([pscustomobject]@{ Target = $(if ($Clave -eq 'Raiz') { $h.FQDN } else { $r.FQDN }); Direction = 'BiDirectional'; IntraForest = $true })
         OUs     = @($diseno.OUs | Where-Object { $_.Dominio -eq $Clave } | ForEach-Object { [pscustomobject]@{ DN = $_.DN; Protegida = $true } })
@@ -119,10 +127,10 @@ function New-EstadoAD([string]$Clave) {
 function New-EstadoArchivos {
     $sids = @{ 'BUILTIN\Administrators' = 'S-1-5-32-544'; 'NT AUTHORITY\SYSTEM' = 'S-1-5-18' }
     $n = 1000
-    foreach ($g in $diseno.GruposDL) { $n++; $sids["$($r.NetBIOS)\$($g.Nombre)"] = "S-1-5-21-1-2-3-$n" }
+    foreach ($g in $diseno.GruposDL) { $n++; $sids["$($h.NetBIOS)\$($g.Nombre)"] = "S-1-5-21-1-2-3-$n" }
     $ntfsVal = @{ FullControl = 2032127; Modify = 1245631; ReadAndExecute = 1179817 }
     [pscustomobject]@{
-        Equipo = 'SRV-ARCHIVOS'; ParteDominio = $true; Dominio = $r.FQDN
+        Equipo = 'DC-HIJO'; ParteDominio = $true; Dominio = $h.FQDN
         Recursos = @($diseno.Recursos | ForEach-Object {
                 $rec = $_
                 [pscustomobject]@{
@@ -158,11 +166,11 @@ function Test-Defecto([string]$Descripcion, [scriptblock]$Romper, [string]$Patro
     $match = @($f | Where-Object { $_.Prueba -like $Patron })
     Assert ($match.Count -ge 1) "Detecta: $Descripcion ($($f.Count) falla(s): $(@($f | ForEach-Object Prueba | Select-Object -First 2) -join ' / '))"
 }
-Test-Defecto 'cuenta del hijo faltante' { param($er, $eh, $ea) $eh.Usuarios = @($eh.Usuarios | Where-Object { $_.Sam -ne 'jperez2' }) } '*jperez2*'
+Test-Defecto 'cuenta faltante en el padre' { param($er, $eh, $ea) $er.Usuarios = @($er.Usuarios | Where-Object { $_.Sam -ne 'jperez2' }) } '*jperez2*'
 Test-Defecto 'cuenta en otra OU' { param($er, $eh, $ea) ($er.Usuarios | Where-Object Sam -eq 'cnunez').DN = 'CN=Carlos Núñez,CN=Users,DC=andina,DC=local' } '*cnunez*'
-Test-Defecto 'miembro de más en un grupo global' { param($er, $eh, $ea) $g = $eh.Grupos | Where-Object Nombre -eq 'GG-VENTAS-Comerciales'; $g.Miembros = @($g.Miembros) + 'CN=Intruso,CN=Users,DC=ventas,DC=andina,DC=local' } 'GG-VENTAS-Comerciales*miembros'
-Test-Defecto 'grupo global del hijo ausente de un DL' { param($er, $eh, $ea) $g = $er.Grupos | Where-Object Nombre -eq 'DL-Lista-Precios-Lectura'; $g.Miembros = @($g.Miembros | Where-Object { $_ -notlike '*GG-VENTAS-Comerciales*' }) } 'DL-Lista-Precios-Lectura*miembros'
-Test-Defecto 'DL creado con ámbito Global' { param($er, $eh, $ea) ($er.Grupos | Where-Object Nombre -eq 'DL-Stock-Modificar').Ambito = 'Global' } 'DL-Stock-Modificar*ámbito'
+Test-Defecto 'miembro de más en un grupo global' { param($er, $eh, $ea) $g = $er.Grupos | Where-Object Nombre -eq 'GG-ANDINA-Comerciales'; $g.Miembros = @($g.Miembros) + 'CN=Intruso,CN=Users,DC=andina,DC=local' } 'GG-ANDINA-Comerciales*miembros'
+Test-Defecto 'grupo global del padre ausente de un DL del hijo' { param($er, $eh, $ea) $g = $eh.Grupos | Where-Object Nombre -eq 'DL-Lista-Precios-Lectura'; $g.Miembros = @($g.Miembros | Where-Object { $_ -notlike '*GG-ANDINA-Comerciales*' }) } 'DL-Lista-Precios-Lectura*miembros'
+Test-Defecto 'DL creado con ámbito Global' { param($er, $eh, $ea) ($eh.Grupos | Where-Object Nombre -eq 'DL-Stock-Modificar').Ambito = 'Global' } 'DL-Stock-Modificar*ámbito'
 Test-Defecto 'confianza unidireccional' { param($er, $eh, $ea) $er.Confianzas[0].Direction = 'Outbound' } 'Confianza*'
 Test-Defecto 'delegación DNS faltante' { param($er, $eh, $ea) $er.Dns.Delegaciones = @() } 'Delegación*'
 Test-Defecto "'Todos' en un recurso compartido" { param($er, $eh, $ea) $x = $ea.Recursos | Where-Object Nombre -eq 'Legajos'; $x.AccesoCompartido = @($x.AccesoCompartido) + [pscustomobject]@{ Sid = 'S-1-1-0'; Cuenta = 'Everyone'; Derecho = 'Read'; Tipo = 'Allow' } } "*Legajos*Todos*"
@@ -171,16 +179,21 @@ Test-Defecto 'NTFS con Modificar en lugar de Lectura' { param($er, $eh, $ea) $x 
 Test-Defecto 'ABE deshabilitado' { param($er, $eh, $ea) ($ea.Recursos | Where-Object Nombre -eq 'Stock').ABE = 'Unrestricted' } '*Stock*enumeración*'
 
 $casos = @(Get-CasosPrueba -Diseno $diseno)
-Assert ($casos.Count -eq 13) "Casos de prueba de acceso: $($casos.Count) cuentas (11 grupos + 2 sin grupo)"
-$com = $casos | Where-Object Grupo -eq 'GG-VENTAS-Comerciales'
-Assert ((@($com.Esperado | Where-Object Recurso -eq 'Lista-Precios')[0].Nivel) -eq 'Lectura') 'Comerciales (hijo) -> Lista-Precios: Lectura'
-$sup = $casos | Where-Object Grupo -eq 'GG-VENTAS-Supervisores'
-Assert ((@($sup.Esperado | Where-Object Recurso -eq 'Lista-Precios')[0].Nivel) -eq 'Modificar') 'Supervisores (hijo) -> Lista-Precios: Modificar'
+Assert ($casos.Count -eq 12 -and @($casos | Where-Object Dominio -ne 'Raiz').Count -eq 0) "Casos de prueba de acceso: $($casos.Count) cuentas del padre (11 grupos + 1 sin grupo)"
+$com = $casos | Where-Object Grupo -eq 'GG-ANDINA-Comerciales'
+Assert ((@($com.Esperado | Where-Object Recurso -eq 'Lista-Precios')[0].Nivel) -eq 'Lectura') 'Comerciales -> Lista-Precios: Lectura'
+$sup = $casos | Where-Object Grupo -eq 'GG-ANDINA-Supervisores'
+Assert ((@($sup.Esperado | Where-Object Recurso -eq 'Lista-Precios')[0].Nivel) -eq 'Modificar') 'Supervisores -> Lista-Precios: Modificar'
 $op = { param($l, $le, $e, $b) [pscustomobject]@{ Lista = $l; Lee = $le; Escribe = $e; Borra = $b; Error = '' } }
 Assert ((Test-ResultadoAcceso -Caso $com -Recurso 'Lista-Precios' -Operaciones (& $op $true $true $false $null)).Resultado -eq 'OK') 'Acceso: Lectura que no puede escribir -> OK'
 Assert ((Test-ResultadoAcceso -Caso $com -Recurso 'Lista-Precios' -Operaciones (& $op $true $true $true $true)).Resultado -eq 'FALLA') 'Acceso: Lectura que PUEDE escribir -> FALLA'
 Assert ((Test-ResultadoAcceso -Caso $com -Recurso 'Legajos' -Operaciones (& $op $false $false $false $null)).Resultado -eq 'OK') 'Acceso: sin permiso y sin acceso -> OK'
 Assert ((Test-ResultadoAcceso -Caso $sup -Recurso 'Reportes-Ventas' -Operaciones (& $op $true $true $true $false)).Resultado -eq 'FALLA') 'Acceso: Modificar que no puede borrar -> FALLA'
+
+$cliOk = [pscustomobject]@{ Nombre = 'CLIENTE01'; ParteDominio = $true; Dominio = 'andina.local'; CanalSeguro = $true; Dns = @($diseno.Cliente.DnsFinal); KitFaltante = @() }
+Assert (@(Test-Cliente -Diseno $diseno -EstadoCliente $cliOk | Where-Object Resultado -ne 'OK').Count -eq 0) 'Cliente unido al padre con DNS y kit: sin observaciones'
+$cliMal = [pscustomobject]@{ Nombre = 'DESKTOP-1A2B'; ParteDominio = $false; Dominio = 'workgroup'; CanalSeguro = $false; Dns = @('8.8.8.8'); KitFaltante = @('permisos-demo.json') }
+Assert (@(Test-Cliente -Diseno $diseno -EstadoCliente $cliMal | Where-Object Resultado -eq 'FALLA').Count -eq 3) 'Cliente sin unir al dominio: detecta nombre, dominio y canal seguro'
 
 $tmp = Join-Path ([System.IO.Path]::GetTempPath()) "ad-test-$(Get-Random)"
 New-Item $tmp -ItemType Directory | Out-Null
@@ -197,7 +210,7 @@ function Get-Bloque([string]$Script, [string]$Variable) {
 }
 
 # --- AD simulado: un almacén por dominio ---
-$script:AD = @{ 'andina.local' = New-Object System.Collections.ArrayList; 'ventas.andina.local' = New-Object System.Collections.ArrayList }
+$script:AD = @{ 'andina.local' = New-Object System.Collections.ArrayList; 'recursos.andina.local' = New-Object System.Collections.ArrayList }
 $script:DominioActual = 'andina.local'
 function Get-Almacen([string]$Server) { if ($Server) { return , $script:AD[$Server] } return , $script:AD[$script:DominioActual] }
 function Find-Objeto([string]$Id, [string]$Clase, [string]$Server) {
@@ -242,7 +255,7 @@ function Get-EntradaPaso4([string]$Clave) {
                 Cargo = $_.Cargo; Telefono = $_.Telefono; Oficina = $_.Oficina; Empresa = $_.Empresa; Descripcion = $_.Descripcion; Password = 'x' } })
     , @($ous, $usu)
 }
-foreach ($par in @(@('Raiz', 'andina.local'), @('Hijo', 'ventas.andina.local'))) {
+foreach ($par in @(@('Raiz', 'andina.local'), @('Hijo', 'recursos.andina.local'))) {
     $script:DominioActual = $par[1]
     $ent = Get-EntradaPaso4 $par[0]
     $r1 = @(& $bloque4 $ent[0] $ent[1])
@@ -251,44 +264,44 @@ foreach ($par in @(@('Raiz', 'andina.local'), @('Hijo', 'ventas.andina.local')))
     $r2 = @(& $bloque4 $ent[0] $ent[1])
     Assert (@($r2 | Where-Object { $_.Accion -notin 'Existente', 'Sin cambios' }).Count -eq 0) "Paso 4 ($($par[1])): segunda ejecución sin cambios (idempotente)"
 }
-$script:DominioActual = 'ventas.andina.local'
-$ent = Get-EntradaPaso4 'Hijo'
+$script:DominioActual = 'andina.local'
+$ent = Get-EntradaPaso4 'Raiz'
 $u = $ent[1] | Where-Object Sam -eq 'mfernandez'
-$u.Cargo = 'Supervisora Sucursal Tucumán'; $u.Area = 'Supervisores'; $u.OU = 'OU=Supervisores,DC=ventas,DC=andina,DC=local'
+$u.Cargo = 'Supervisora Sucursal Tucumán'; $u.Area = 'Supervisores'; $u.OU = 'OU=Supervisores,DC=andina,DC=local'
 $r3 = @(& $bloque4 $ent[0] $ent[1])
 $act = @($r3 | Where-Object { $_.Objeto -eq 'mfernandez' })[0]
 Assert ($act.Accion -eq 'Actualizado' -and $act.Detalle -match 'Title' -and $act.Detalle -match 'movido') "Paso 4: un cambio de área actualiza atributos y mueve la cuenta ($($act.Detalle))"
-[void]$script:AD['ventas.andina.local'].Add([pscustomobject]@{ Clase = 'user'; Name = 'Viejo Usuario'; SamAccountName = 'vusuario'; DistinguishedName = 'CN=Viejo Usuario,OU=Comerciales,DC=ventas,DC=andina,DC=local' })
+[void]$script:AD['andina.local'].Add([pscustomobject]@{ Clase = 'user'; Name = 'Viejo Usuario'; SamAccountName = 'vusuario'; DistinguishedName = 'CN=Viejo Usuario,OU=Comerciales,DC=andina,DC=local' })
 $r4 = @(& $bloque4 $ent[0] $ent[1])
 Assert (@($r4 | Where-Object { $_.Accion -eq 'NoEnDiseno' -and $_.Objeto -eq 'vusuario' }).Count -eq 1) 'Paso 4: informa (sin borrar) una cuenta que no está en usuarios.csv'
 
 # Se restablece el área original para el paso 5
-$u.Cargo = 'Vendedora'; $u.Area = 'Comerciales'; $u.OU = 'OU=Comerciales,DC=ventas,DC=andina,DC=local'
+$u.Cargo = 'Vendedora'; $u.Area = 'Comerciales'; $u.OU = 'OU=Comerciales,DC=andina,DC=local'
 $null = & $bloque4 $ent[0] $ent[1]
-$script:AD['ventas.andina.local'].Remove(@($script:AD['ventas.andina.local'] | Where-Object SamAccountName -eq 'vusuario')[0])
+$script:AD['andina.local'].Remove(@($script:AD['andina.local'] | Where-Object SamAccountName -eq 'vusuario')[0])
 
 # --- Paso 5: grupos globales y de dominio local ---
 $bloqueGG = Get-Bloque 'modules/05-AccesoEntreDominios/Invoke-Acceso.ps1' 'bloqueGruposGlobales'
 $bloqueDL = Get-Bloque 'modules/05-AccesoEntreDominios/Invoke-Acceso.ps1' 'bloqueGruposDL'
-$ggs = @{}
-foreach ($k in 'Raiz', 'Hijo') { $ggs[$k] = @($diseno.GruposGlobales | Where-Object Dominio -eq $k | ForEach-Object { [pscustomobject]@{ Nombre = $_.Nombre; OU = $_.OU; Descripcion = $_.Descripcion; Miembros = @($_.Miembros) } }) }
+$ggs = @($diseno.GruposGlobales | ForEach-Object { [pscustomobject]@{ Nombre = $_.Nombre; OU = $_.OU; Descripcion = $_.Descripcion; Miembros = @($_.Miembros) } })
 $dls = @($diseno.GruposDL | ForEach-Object { [pscustomobject]@{ Nombre = $_.Nombre; OU = $_.OU; Descripcion = $_.Descripcion; Miembros = @($_.Miembros | ForEach-Object { [pscustomobject]@{ Grupo = $_.Grupo; DominioFQDN = $_.DominioFQDN } }) } })
 
-$script:DominioActual = 'andina.local';        $g1 = @(& $bloqueGG $ggs.Raiz)
-$script:DominioActual = 'ventas.andina.local'; $g2 = @(& $bloqueGG $ggs.Hijo)
-Assert (@($g1 + $g2 | Where-Object Accion -eq 'Creado').Count -eq 11) 'Paso 5: crea 11 grupos globales'
-$com = Find-Objeto 'GG-VENTAS-Comerciales' 'group'
-Assert (@($com.Miembros).Count -eq 12) "Paso 5: GG-VENTAS-Comerciales con 12 miembros ($(@($com.Miembros).Count))"
-
 $script:DominioActual = 'andina.local'
-$d1 = @(& $bloqueDL $dls 'andina.local' $null)
-Assert (@($d1 | Where-Object Accion -eq 'Creado').Count -eq 20) 'Paso 5: crea 20 grupos de dominio local en el raíz'
+$g1 = @(& $bloqueGG $ggs)
+Assert (@($g1 | Where-Object Accion -eq 'Creado').Count -eq 11) 'Paso 5: crea 11 grupos globales en el padre'
+$com = Find-Objeto 'GG-ANDINA-Comerciales' 'group'
+Assert (@($com.Miembros).Count -eq 12) "Paso 5: GG-ANDINA-Comerciales con 12 miembros ($(@($com.Miembros).Count))"
+
+$script:DominioActual = 'recursos.andina.local'
+$d1 = @(& $bloqueDL $dls 'recursos.andina.local' $null)
+Assert (@($d1 | Where-Object Accion -eq 'Creado').Count -eq 20) 'Paso 5: crea 20 grupos de dominio local en el hijo'
 $dlp = Find-Objeto 'DL-Lista-Precios-Lectura' 'group'
-Assert (@($dlp.Miembros | Where-Object { $_ -like 'CN=GG-VENTAS-Comerciales,*DC=ventas*' }).Count -eq 1) 'Paso 5: el DL del raíz contiene el grupo global del hijo (anidamiento entre dominios)'
-$d2 = @(& $bloqueDL $dls 'andina.local' $null)
+Assert (@($dlp.Miembros | Where-Object { $_ -like 'CN=GG-ANDINA-Comerciales,OU=Grupos,DC=andina,DC=local' }).Count -eq 1) 'Paso 5: el DL del hijo contiene el grupo global del padre (anidamiento entre dominios)'
+Assert (@($script:AD['recursos.andina.local'] | Where-Object Clase -eq 'group' | Where-Object Name -like 'GG-*').Count -eq 0) 'Paso 5: el dominio de recursos no tiene grupos globales propios'
+$d2 = @(& $bloqueDL $dls 'recursos.andina.local' $null)
 Assert (@($d2 | Where-Object { $_.Agregados -or $_.Quitados -or $_.Accion -ne 'Existente' }).Count -eq 0) 'Paso 5: segunda ejecución sin cambios (idempotente)'
 [void]$dlp.Miembros.Add('CN=GG-ANDINA-Legales,OU=Grupos,DC=andina,DC=local')
-$d3 = @(& $bloqueDL $dls 'andina.local' $null)
+$d3 = @(& $bloqueDL $dls 'recursos.andina.local' $null)
 Assert (@($d3 | Where-Object { $_.Objeto -eq 'DL-Lista-Precios-Lectura' -and $_.Quitados -match 'gg-andina-legales' }).Count -eq 1) 'Paso 5: quita un miembro agregado a mano que no está en accesos.csv'
 
 # --- Validación sobre el AD simulado (cierra el circuito: lo que crean los pasos 4 y 5 valida OK) ---
@@ -299,7 +312,7 @@ function Get-EstadoDesdeSimulado([string]$Dominio, [string]$Clave) {
     $base.Grupos = @($alm | Where-Object Clase -eq 'group' | ForEach-Object { [pscustomobject]@{ Nombre = $_.Name; Ambito = $_.GroupScope; Categoria = 'Security'; DN = $_.DistinguishedName; Miembros = @($_.Miembros) } })
     $base
 }
-$esR = Get-EstadoDesdeSimulado 'andina.local' 'Raiz'; $esH = Get-EstadoDesdeSimulado 'ventas.andina.local' 'Hijo'
+$esR = Get-EstadoDesdeSimulado 'andina.local' 'Raiz'; $esH = Get-EstadoDesdeSimulado 'recursos.andina.local' 'Hijo'
 $v = @(Test-Grupos -Diseno $diseno -EstadoRaiz $esR -EstadoHijo $esH) + @(Test-Estructura -Diseno $diseno -Clave Raiz -Estado $esR) + @(Test-Estructura -Diseno $diseno -Clave Hijo -Estado $esH)
 $vf = @($v | Where-Object Resultado -eq 'FALLA')
 Assert ($vf.Count -eq 0) "La validación del AD que dejaron los pasos 4 y 5 da $($v.Count) pruebas y $($vf.Count) fallas"

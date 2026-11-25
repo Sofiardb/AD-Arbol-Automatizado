@@ -1,4 +1,4 @@
-﻿#Requires -Version 5.1
+﻿#Requires -Version 3.0
 <#
 .SYNOPSIS
     Funciones compartidas por todos los módulos del proyecto.
@@ -58,6 +58,30 @@ function Write-Log {
 # =====================================================================
 #  Configuración
 # =====================================================================
+function Import-DatosPsd1 {
+    <#
+    .SYNOPSIS
+        Lee un archivo .psd1 como tabla. Equivale a Import-PowerShellDataFile (que requiere PowerShell 5),
+        pero funciona desde PowerShell 3.0: el contenido se evalúa en modo de lenguaje restringido,
+        que solo admite datos (tablas, listas, cadenas, números) y no ejecuta comandos.
+    #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$Ruta)
+    $texto = [System.IO.File]::ReadAllText((Resolve-Path -LiteralPath $Ruta).ProviderPath)
+    $bloque = [scriptblock]::Create($texto)
+    $bloque.CheckRestrictedLanguage([string[]]@(), [string[]]@('PSScriptRoot'), $false)
+    $datos = & $bloque
+    if ($datos -isnot [System.Collections.IDictionary]) { throw "$Ruta debe contener una tabla @{ ... }." }
+    return $datos
+}
+
+function Set-ContenidoUtf8 {
+    <# Escribe texto en UTF-8 CON BOM (lo necesita Windows PowerShell 3.0-5.1 para leer acentos), desde cualquier versión. #>
+    param([Parameter(Mandatory)][string]$Ruta, [AllowEmptyString()][string]$Texto)
+    $completa = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($Ruta)
+    [System.IO.File]::WriteAllText($completa, $Texto, (New-Object System.Text.UTF8Encoding($true)))
+}
+
 function Import-ConfigLab {
     <#
     .SYNOPSIS
@@ -77,7 +101,7 @@ function Import-ConfigLab {
         if (-not (Test-Path $a)) { throw "No se encontró el archivo de configuración: $a" }
     }
     return @{
-        Lab      = Import-PowerShellDataFile -Path $archivos.Lab
+        Lab      = Import-DatosPsd1 -Ruta $archivos.Lab
         Usuarios = @(Import-Csv -Path $archivos.Usuarios -Encoding UTF8)
         Accesos  = @(Import-Csv -Path $archivos.Accesos  -Encoding UTF8)
     }
@@ -93,7 +117,19 @@ function Get-EstadoDespliegue {
     if (-not (Test-Path $archivo)) { return @() }
     $contenido = Get-Content -Path $archivo -Raw -Encoding UTF8
     if ([string]::IsNullOrWhiteSpace($contenido)) { return @() }
-    return @($contenido | ConvertFrom-Json)
+    # En Windows PowerShell 3.0-5.1, ConvertFrom-Json devuelve una lista JSON como UN solo objeto
+    # (y versiones anteriores del script pudieron guardar listas anidadas): se aplana y se dejan
+    # solo los registros con la propiedad Paso, uno por paso.
+    $pendientes = New-Object System.Collections.Stack
+    $pendientes.Push((ConvertFrom-Json -InputObject $contenido))
+    $registros = @{}
+    while ($pendientes.Count) {
+        $x = $pendientes.Pop()
+        if ($null -eq $x) { continue }
+        if ($x -is [System.Collections.IEnumerable] -and $x -isnot [string]) { foreach ($y in $x) { $pendientes.Push($y) } ; continue }
+        if ($x.PSObject.Properties.Name -contains 'Paso') { $registros[[int]$x.Paso] = $x }
+    }
+    return @($registros.Keys | Sort-Object | ForEach-Object { $registros[$_] })
 }
 
 function Test-PasoCompletado {
@@ -135,8 +171,16 @@ function Get-CredencialDespliegue {
 
     $archivo = Join-Path $RutaSalida 'credencial.xml'
     if (Test-Path $archivo) {
-        Write-Log 'Usando la credencial guardada de una ejecución anterior.'
-        return Import-Clixml -Path $archivo
+        try {
+            $guardada = Import-Clixml -Path $archivo
+            $null = $guardada.GetNetworkCredential().Password
+            Write-Log 'Usando la credencial guardada de una ejecución anterior.'
+            return $guardada
+        }
+        catch {
+            # DPAPI: otro usuario (por ejemplo, después de unir el equipo al dominio) no puede descifrarla
+            Write-Log 'La credencial guardada fue cifrada por otro usuario o equipo: se vuelve a pedir.' -Nivel Advertencia
+        }
     }
     do {
         $c1 = Read-Host 'Contraseña de administrador del despliegue' -AsSecureString
@@ -165,19 +209,6 @@ function ConvertFrom-SecureStringTexto {
     finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($ptr) }
 }
 
-function New-CredencialDominio {
-    <# Construye la credencial de administrador de un dominio a partir de la del despliegue. #>
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory)][pscredential]$Credencial,
-        [Parameter(Mandatory)][string]$NetBIOS
-    )
-    return New-Object System.Management.Automation.PSCredential("$NetBIOS\Administrator", $Credencial.Password)
-}
-
-# =====================================================================
-#  Convenciones de nombres
-# =====================================================================
 function ConvertTo-TextoSimple {
     <# Quita acentos y caracteres no alfanuméricos ("Núñez" -> "Nunez"). #>
     [CmdletBinding()]
@@ -274,7 +305,7 @@ function ConvertFrom-EnteroIP {
     param([Parameter(Mandatory)][uint32]$Valor)
     $bytes = [BitConverter]::GetBytes($Valor)
     [Array]::Reverse($bytes)
-    return ([System.Net.IPAddress]::new($bytes)).ToString()
+    return (New-Object System.Net.IPAddress -ArgumentList (, $bytes)).ToString()
 }
 
 function Test-FormatoIPv4 {
@@ -381,6 +412,34 @@ function Wait-ServidorDisponible {
     throw "Tiempo agotado esperando a $Equipo ($TiempoMaximoSeg s)."
 }
 
+$script:CulturaRemota = @{}
+
+function Get-OpcionSesionRemota {
+    <#
+    .SYNOPSIS
+        Opciones de sesión con el idioma INSTALADO en el equipo remoto.
+    .DESCRIPTION
+        Una sesión remota usa por defecto el idioma del equipo que se conecta. Si ese idioma no está
+        instalado en el servidor (por ejemplo ADMIN en español y el servidor en inglés), algunos módulos
+        como SmbShare no cargan. Se consulta una vez por equipo y se recuerda.
+    #>
+    param([Parameter(Mandatory)][string]$Equipo, [Parameter(Mandatory)][pscredential]$Credencial)
+    if (-not $script:CulturaRemota.ContainsKey($Equipo)) {
+        $cultura = ''
+        try { $cultura = [string](Invoke-Command -ComputerName $Equipo -Credential $Credencial -ErrorAction Stop -ScriptBlock { [System.Globalization.CultureInfo]::InstalledUICulture.Name }) } catch { $cultura = '' }
+        if ($cultura) { $script:CulturaRemota[$Equipo] = $cultura }
+        else { return $null }   # no se pudo consultar (por ejemplo, el equipo está reiniciando): se reintenta la próxima vez
+    }
+    try {
+        $c = New-Object System.Globalization.CultureInfo($script:CulturaRemota[$Equipo])
+        $opcion = New-PSSessionOption
+        $opcion.Culture = $c
+        $opcion.UICulture = $c
+        return $opcion
+    }
+    catch { return $null }
+}
+
 function Invoke-EnServidor {
     <# Ejecuta un bloque de código en un servidor remoto, con registro y manejo de errores. #>
     [CmdletBinding()]
@@ -393,7 +452,10 @@ function Invoke-EnServidor {
     )
     Write-Log "[$Equipo] $Descripcion"
     try {
-        return Invoke-Command -ComputerName $Equipo -Credential $Credencial -ScriptBlock $Bloque -ArgumentList $Argumentos -ErrorAction Stop
+        $p = @{ ComputerName = $Equipo; Credential = $Credencial; ScriptBlock = $Bloque; ArgumentList = $Argumentos; ErrorAction = 'Stop' }
+        $opcion = Get-OpcionSesionRemota -Equipo $Equipo -Credencial $Credencial
+        if ($opcion) { $p.SessionOption = $opcion }
+        return Invoke-Command @p
     }
     catch {
         Write-Log "[$Equipo] Falló: $Descripcion -> $($_.Exception.Message)" -Nivel Error
@@ -402,7 +464,7 @@ function Invoke-EnServidor {
 }
 
 # =====================================================================
-#  Apoyo a los pasos 2 a 6
+#  Apoyo a los pasos 2 a 7
 # =====================================================================
 function Get-DisenoParaPaso {
     <#
@@ -418,9 +480,9 @@ function Get-DisenoParaPaso {
 }
 
 function Get-ServidorDiseno {
-    <# Devuelve el servidor del diseño con el rol indicado (DCRaiz, DCHijo o Archivos). #>
+    <# Devuelve el servidor del diseño con el rol indicado (DCRaiz o DCHijo). #>
     [CmdletBinding()]
-    param([Parameter(Mandatory)]$Diseno, [Parameter(Mandatory)][ValidateSet('DCRaiz', 'DCHijo', 'Archivos')][string]$Rol)
+    param([Parameter(Mandatory)]$Diseno, [Parameter(Mandatory)][ValidateSet('DCRaiz', 'DCHijo')][string]$Rol)
     return @($Diseno.Servidores | Where-Object { $_.Rol -eq $Rol })[0]
 }
 
@@ -430,7 +492,7 @@ function Get-CredencialesLab {
         A partir de la contraseña del despliegue arma las tres credenciales que se usan:
           Local -> Administrador local de las VM recién instaladas (antes de unirse a un dominio)
           Raiz  -> ANDINA\Administrador (pasa a ser Administrador de empresa del bosque)
-          Hijo  -> VENTAS\Administrador (administrador del dominio hijo)
+          Hijo  -> RECURSOS\Administrador (administrador del dominio hijo)
         Las tres comparten la contraseña: el Administrador local del primer DC de cada dominio
         se convierte en el Administrador de ese dominio.
     #>
@@ -438,11 +500,31 @@ function Get-CredencialesLab {
     param([Parameter(Mandatory)][pscredential]$Credencial, [Parameter(Mandatory)]$Diseno)
     $usuario = 'Administrator'
     if ($Diseno.Parametros.UsuarioAdministrador) { $usuario = [string]$Diseno.Parametros.UsuarioAdministrador }
+    # El Administrador integrado se llama distinto según el idioma de Windows: para las cuentas LOCALES
+    # se prueban ambos nombres (los servidores pueden estar en inglés y el cliente en español).
+    $alternativas = @(@('Administrator', 'Administrador') | Where-Object { $_ -ne $usuario } | ForEach-Object {
+            New-Object System.Management.Automation.PSCredential($_, $Credencial.Password)
+        })
     return [pscustomobject]@{
+        LocalAlternativas = $alternativas
         Local = New-Object System.Management.Automation.PSCredential($usuario, $Credencial.Password)
         Raiz  = New-Object System.Management.Automation.PSCredential("$($Diseno.Dominios.Raiz.NetBIOS)\$usuario", $Credencial.Password)
         Hijo  = New-Object System.Management.Automation.PSCredential("$($Diseno.Dominios.Hijo.NetBIOS)\$usuario", $Credencial.Password)
     }
+}
+
+function Test-PuertoAbierto {
+    <# Comprueba en pocos segundos si un equipo acepta conexiones TCP en un puerto. #>
+    param([Parameter(Mandatory)][string]$Equipo, [int]$Puerto = 5985, [int]$EsperaMs = 3000)
+    $tcp = New-Object System.Net.Sockets.TcpClient
+    try {
+        $intento = $tcp.BeginConnect($Equipo, $Puerto, $null, $null)
+        if (-not $intento.AsyncWaitHandle.WaitOne($EsperaMs, $false)) { return $false }
+        $tcp.EndConnect($intento)
+        return $true
+    }
+    catch { return $false }
+    finally { $tcp.Close() }
 }
 
 function Connect-Servidor {
@@ -459,19 +541,23 @@ function Connect-Servidor {
         [Parameter(Mandatory)][pscredential[]]$Credenciales,
         [int]$Intentos = 1
     )
+    $ultimoError = ''
     for ($i = 1; $i -le $Intentos; $i++) {
         foreach ($ip in @($Servidor.IPFinal, $Servidor.IPActual) | Select-Object -Unique) {
+            # Primero una prueba rápida del puerto de WinRM (5985): Test-WSMan contra una IP que no responde demora minutos
+            if (-not (Test-PuertoAbierto -Equipo $ip -Puerto 5985)) { continue }
             if (-not (Test-WSMan -ComputerName $ip -ErrorAction SilentlyContinue)) { continue }
             foreach ($c in $Credenciales) {
                 try {
                     $null = Invoke-Command -ComputerName $ip -Credential $c -ScriptBlock { $env:COMPUTERNAME } -ErrorAction Stop
                     return [pscustomobject]@{ Equipo = $ip; Credencial = $c; EnIPFinal = ($ip -eq $Servidor.IPFinal) }
                 }
-                catch { Write-Verbose "[$ip] $($c.UserName): $($_.Exception.Message)" }
+                catch { $ultimoError = "$($c.UserName): $($_.Exception.Message)"; Write-Verbose "[$ip] $ultimoError" }
             }
         }
-        if ($i -lt $Intentos) { Start-Sleep -Seconds 15 }
+        if ($i -lt $Intentos) { Write-Log "Sin respuesta de $($Servidor.Nombre); reintento $i/$Intentos en 15 s..."; Start-Sleep -Seconds 15 }
     }
+    if ($ultimoError) { Write-Log "Último error al conectar a $($Servidor.Nombre): $ultimoError" -Nivel Advertencia }
     throw "No se pudo conectar a $($Servidor.Nombre) (IP $($Servidor.IPFinal) / $($Servidor.IPActual)) con las credenciales disponibles. Verifique que la VM esté encendida, que WinRM esté habilitado (Enable-PSRemoting) y que la contraseña del Administrador sea la del despliegue."
 }
 
@@ -514,10 +600,15 @@ function Set-HostsConfiables {
     param([Parameter(Mandatory)][string[]]$IPs)
     if ([System.Environment]::OSVersion.Platform -ne 'Win32NT') { return }
     try {
+        # El cliente WinRM necesita el servicio en marcha para leer o cambiar TrustedHosts
+        $servicio = Get-Service -Name WinRM -ErrorAction Stop
+        if ($servicio.Status -ne 'Running') { Start-Service -Name WinRM -ErrorAction Stop; Write-Log 'Servicio WinRM iniciado en este equipo.' }
+        Import-Module Microsoft.WSMan.Management -ErrorAction SilentlyContinue
         $actual = [string](Get-Item WSMan:\localhost\Client\TrustedHosts -ErrorAction Stop).Value
         if ($actual -eq '*') { return }
         $lista = @($actual.Split(',') | ForEach-Object { $_.Trim() } | Where-Object { $_ })
-        $faltan = @($IPs | Where-Object { $_ -notin $lista } | Select-Object -Unique)
+        # Una entrada con comodín (192.168.10.*) ya cubre las IP de la red
+        $faltan = @($IPs | Where-Object { $ip = $_; -not @($lista | Where-Object { $ip -like $_ }).Count } | Select-Object -Unique)
         if ($faltan.Count -eq 0) { return }
         Set-Item WSMan:\localhost\Client\TrustedHosts -Value ((@($lista) + $faltan) -join ',') -Force
         Write-Log "TrustedHosts: se agregaron $($faltan -join ', ')."

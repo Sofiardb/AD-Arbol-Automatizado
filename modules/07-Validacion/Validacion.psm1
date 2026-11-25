@@ -1,4 +1,4 @@
-﻿#Requires -Version 5.1
+﻿#Requires -Version 3.0
 <#
 .SYNOPSIS
     Módulo 06 – Lógica de validación (objetivo específico 6).
@@ -13,6 +13,7 @@
       Test-Estructura       OU y cuentas de un dominio
       Test-Grupos           grupos globales y de dominio local (ámbito y pertenencia exacta)
       Test-Recursos         recursos compartidos, ABE, permisos del recurso compartido y NTFS
+      Test-Cliente          cliente de la demostración: dominio, canal seguro, DNS y kit
       Get-CasosPrueba       cuentas temporales y nivel esperado por recurso (pruebas de acceso reales)
       Test-ResultadoAcceso  compara lo que pudo hacer cada cuenta con lo esperado
       Export-InformeValidacion   informe HTML y CSV
@@ -23,7 +24,7 @@ Set-StrictMode -Version 2.0
 # Derechos NTFS con el bit Synchronize, como los devuelve Windows
 $script:DerechosNTFS = @{ FullControl = 2032127; Modify = 1245631; ReadAndExecute = 1179817 }
 $script:RangoNivel   = @{ SinAcceso = 0; Lectura = 1; Modificar = 2 }
-$script:ModoFuncional = @{ WinThreshold = 'Windows2016'; Win2012R2 = 'Windows2012R2' }
+$script:ModoFuncional = @{ WinThreshold = 'Windows2016'; Win2012R2 = 'Windows2012R2'; Win2012 = 'Windows2012' }
 
 function New-Resultado {
     param(
@@ -134,7 +135,8 @@ function Test-Dns {
     $inv = @($EstadoRaiz.Dns.Zonas | Where-Object { $_.Nombre -eq $Diseno.Red.ZonaInversa }) | Select-Object -First 1
     if ($inv) { New-Resultado $cat 'Replicación de la zona inversa' 'Forest' ([string]$inv.Replicacion) (Get-ResultadoBool ($inv.Replicacion -eq 'Forest') -SoloAdvertencia) }
 
-    $deleg = @($EstadoRaiz.Dns.Delegaciones | Where-Object { $_.Hijo -eq $h.FQDN -or $_.Hijo -eq $h.Etiqueta }) | Select-Object -First 1
+    # Según la versión, Windows devuelve el nombre de la zona delegada con o sin punto final y completo o solo la etiqueta
+    $deleg = @($EstadoRaiz.Dns.Delegaciones | Where-Object { $n = ([string]$_.Hijo).TrimEnd('.'); $n -eq $h.FQDN -or $n -eq $h.Etiqueta -or $n -like "$($h.Etiqueta).*" }) | Select-Object -First 1
     $obt = 'no existe'
     if ($deleg) { $obt = "NS: $(@($deleg.NS) -join ', ')" }
     New-Resultado $cat "Delegación de $($h.FQDN) en la zona $($r.FQDN)" 'existe' $obt (Get-ResultadoBool ([bool]$deleg))
@@ -189,7 +191,12 @@ function Test-Estructura {
         New-Resultado $cat $prueba "UPN $($u.UPN) · habilitada · OU $($u.Area)" $obt (Get-ResultadoBool (-not $problemas))
     }
     $creadas = @($previstos | Where-Object { $usuarios.ContainsKey($_.Sam.ToLowerInvariant()) }).Count
-    New-Resultado $cat 'Total de cuentas del diseño presentes' "$($previstos.Count)" "$creadas" (Get-ResultadoBool ($creadas -eq $previstos.Count))
+    if ($previstos.Count) { New-Resultado $cat 'Total de cuentas del diseño presentes' "$($previstos.Count)" "$creadas" (Get-ResultadoBool ($creadas -eq $previstos.Count)) }
+    else {
+        # Dominio de recursos: no debe tener cuentas de usuario propias (salvo las integradas)
+        $propias = @($Estado.Usuarios | Where-Object { $_.Sam -notin 'Administrator', 'Administrador', 'Guest', 'Invitado', 'krbtgt', 'DefaultAccount' -and $_.Sam -notlike 'zzprueba*' })
+        New-Resultado $cat 'Cuentas de usuario en el dominio de recursos' '0 (las cuentas están en el dominio padre)' "$($propias.Count)$(if ($propias.Count) { ': ' + (@($propias | Select-Object -First 5 | ForEach-Object Sam) -join ', ') })" (Get-ResultadoBool ($propias.Count -eq 0) -SoloAdvertencia)
+    }
 }
 
 # =====================================================================
@@ -220,7 +227,7 @@ function Test-Grupos {
 
     $entreDominios = 0
     foreach ($g in @($Diseno.GruposDL)) {
-        $real = @($EstadoRaiz.Grupos | Where-Object { $_.Nombre -eq $g.Nombre }) | Select-Object -First 1
+        $real = @($estados[$g.Dominio].Grupos | Where-Object { $_.Nombre -eq $g.Nombre }) | Select-Object -First 1
         $prueba = "$($g.Nombre) ($($g.DominioFQDN))"
         if (-not $real) { New-Resultado $cat $prueba 'existe' 'no existe' 'FALLA'; continue }
         New-Resultado $cat "$prueba – ámbito" 'DomainLocal / Security' "$($real.Ambito) / $($real.Categoria)" (Get-ResultadoBool ($real.Ambito -eq 'DomainLocal' -and $real.Categoria -eq 'Security'))
@@ -230,7 +237,7 @@ function Test-Grupos {
         New-Resultado $cat "$prueba – miembros" $nombres (Get-TextoDiferencia $cmp { param($x) Get-CN $x }) (Get-ResultadoBool $cmp.Iguales)
         $entreDominios += @($g.Miembros | Where-Object { $_.DominioFQDN -ne $g.DominioFQDN }).Count
     }
-    New-Resultado $cat 'Anidamientos entre dominios (GG del hijo dentro de DL del raíz)' 'informativo' "$entreDominios" 'OK'
+    New-Resultado $cat 'Anidamientos entre dominios (GG del padre dentro de DL del hijo)' 'informativo' "$entreDominios" 'OK'
 }
 
 # =====================================================================
@@ -240,8 +247,8 @@ function Test-Recursos {
     [CmdletBinding()]
     param([Parameter(Mandatory)]$Diseno, [Parameter(Mandatory)]$EstadoArchivos)
     $cat = 'Recursos y permisos'
-    $srv = Get-ServidorDiseno -Diseno $Diseno -Rol Archivos
-    New-Resultado $cat "$($srv.Nombre) miembro del dominio" $Diseno.Dominios.Raiz.FQDN ([string]$EstadoArchivos.Dominio) (Get-ResultadoBool ($EstadoArchivos.ParteDominio -and $EstadoArchivos.Dominio -eq $Diseno.Dominios.Raiz.FQDN))
+    $srv = Get-ServidorDiseno -Diseno $Diseno -Rol DCHijo
+    New-Resultado $cat "$($srv.Nombre) (servidor de los recursos) en el dominio de recursos" $Diseno.Dominios.Hijo.FQDN ([string]$EstadoArchivos.Dominio) (Get-ResultadoBool ($EstadoArchivos.ParteDominio -and $EstadoArchivos.Dominio -eq $Diseno.Dominios.Hijo.FQDN))
 
     foreach ($r in @($Diseno.Recursos)) {
         $e = @($EstadoArchivos.Recursos | Where-Object { $_.Nombre -eq $r.Nombre }) | Select-Object -First 1
@@ -281,6 +288,25 @@ function Test-Recursos {
 }
 
 # =====================================================================
+#  Cliente de la demostración
+# =====================================================================
+function Test-Cliente {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)]$Diseno, $EstadoCliente)
+    $cat = 'Cliente de la demostración'
+    $c = $Diseno.Cliente
+    if (-not $c) { return }
+    if (-not $EstadoCliente) { New-Resultado $cat "Estado de $($c.Nombre)" 'accesible' 'no se pudo consultar (equipo apagado o sin WinRM)' 'ADVERTENCIA'; return }
+    New-Resultado $cat "Nombre del equipo" $c.Nombre ([string]$EstadoCliente.Nombre) (Get-ResultadoBool ($EstadoCliente.Nombre -eq $c.Nombre))
+    New-Resultado $cat "$($c.Nombre) miembro del dominio" $c.Dominio ([string]$EstadoCliente.Dominio) (Get-ResultadoBool ($EstadoCliente.ParteDominio -and $EstadoCliente.Dominio -eq $c.Dominio))
+    New-Resultado $cat 'Canal seguro con el dominio' 'True' ([string]$EstadoCliente.CanalSeguro) (Get-ResultadoBool ([bool]$EstadoCliente.CanalSeguro))
+    $cmp = Compare-Conjunto @($c.DnsFinal) @($EstadoCliente.Dns)
+    New-Resultado $cat 'Servidores DNS del cliente' (@($c.DnsFinal) -join ', ') (@($EstadoCliente.Dns) -join ', ') (Get-ResultadoBool $cmp.Iguales -SoloAdvertencia)
+    $faltan = @($EstadoCliente.KitFaltante)
+    New-Resultado $cat "Kit de demostración en $($c.CarpetaDemo)" 'Probar-Permisos.ps1, permisos-demo.json y accesos directos' $(if ($faltan.Count) { "faltan: $($faltan -join ', ')" } else { 'completo' }) (Get-ResultadoBool ($faltan.Count -eq 0) -SoloAdvertencia)
+}
+
+# =====================================================================
 #  Pruebas de acceso reales
 # =====================================================================
 function Get-NivelEsperado {
@@ -298,14 +324,13 @@ function Get-CasosPrueba {
     <#
     .SYNOPSIS
         Una cuenta temporal por grupo global (representa a cualquier usuario del área) y una cuenta
-        sin grupos en cada dominio (control negativo). Para cada una, el nivel esperado por recurso.
+        sin grupos (control negativo), todas en el dominio padre. Para cada una, el nivel esperado por recurso.
     #>
     [CmdletBinding()]
     param([Parameter(Mandatory)]$Diseno)
     $casos = New-Object System.Collections.Generic.List[object]
     $n = 0
     $definiciones = @($Diseno.GruposGlobales | ForEach-Object { [pscustomobject]@{ Dominio = $_.Dominio; Grupo = $_.Nombre; Area = $_.Area } })
-    $definiciones += [pscustomobject]@{ Dominio = 'Hijo'; Grupo = ''; Area = '(sin grupo)' }
     $definiciones += [pscustomobject]@{ Dominio = 'Raiz'; Grupo = ''; Area = '(sin grupo)' }
     foreach ($def in $definiciones) {
         $n++
@@ -399,4 +424,4 @@ $($sb.ToString())
     return $archivo
 }
 
-Export-ModuleMember -Function Test-Bosque, Test-Dns, Test-Estructura, Test-Grupos, Test-Recursos, Get-NivelEsperado, Get-CasosPrueba, Test-ResultadoAcceso, Export-InformeValidacion, New-Resultado, Compare-Conjunto
+Export-ModuleMember -Function Test-Cliente, Test-Bosque, Test-Dns, Test-Estructura, Test-Grupos, Test-Recursos, Get-NivelEsperado, Get-CasosPrueba, Test-ResultadoAcceso, Export-InformeValidacion, New-Resultado, Compare-Conjunto

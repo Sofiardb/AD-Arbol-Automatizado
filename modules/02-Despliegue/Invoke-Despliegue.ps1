@@ -1,19 +1,21 @@
-﻿#Requires -Version 5.1
+﻿#Requires -Version 3.0
 <#
 .SYNOPSIS
-    Paso 2 – Despliegue: prepara los servidores, crea el dominio raíz (bosque) y el dominio hijo,
-    y une el servidor de archivos al dominio raíz (objetivo específico 2).
+    Paso 2 – Despliegue: prepara los dos servidores y crea el dominio raíz (bosque, cuentas)
+    y el dominio hijo (recursos) (objetivo específico 2).
 
 .DESCRIPTION
     Se ejecuta desde el equipo de administración; todo el trabajo en los servidores se hace
     por PowerShell Remoting (Invoke-Command contra la IP de cada VM).
 
-    Fase A  Preparación de los tres servidores
-            roles y características · zona horaria · nombre · IP fija · DNS inicial · reinicio
-    Fase B  DC-RAIZ:      Install-ADDSForest  (bosque + dominio raíz + DNS integrado)
-    Fase C  DC-HIJO:      Install-ADDSDomain  (dominio hijo + DNS + delegación en el padre)
-    Fase D  SRV-ARCHIVOS: Add-Computer        (miembro del dominio raíz)
-    Fase E  DNS de cliente definitivo en los tres servidores y verificación de la confianza
+    Fase A  Preparación de DC-RAIZ y DC-HIJO
+            roles y características (DC-HIJO incluye el servidor de archivos) · zona horaria ·
+            nombre · IP fija · DNS inicial · reinicio
+    Fase B  DC-RAIZ: Install-ADDSForest  (bosque + dominio raíz + DNS integrado)
+    Fase C  DC-HIJO: Install-ADDSDomain  (dominio hijo + DNS + delegación en el padre)
+    Fase D  DNS de cliente definitivo en ambos servidores y verificación de la confianza
+
+    El equipo cliente de la demostración se prepara en el paso 6.
 
     Es idempotente: cada fase comprueba el estado real del servidor y se omite si ya está hecha,
     por lo que se puede volver a ejecutar después de un corte.
@@ -34,7 +36,6 @@ $Diseno = Get-DisenoParaPaso -Diseno $Diseno -RutaSalida $RutaSalida
 
 $srvRaiz     = Get-ServidorDiseno -Diseno $Diseno -Rol DCRaiz
 $srvHijo     = Get-ServidorDiseno -Diseno $Diseno -Rol DCHijo
-$srvArchivos = Get-ServidorDiseno -Diseno $Diseno -Rol Archivos
 $domRaiz     = $Diseno.Dominios.Raiz
 $domHijo     = $Diseno.Dominios.Hijo
 $nivel       = [string]$Diseno.Parametros.NivelFuncional
@@ -52,9 +53,7 @@ if ($WhatIfPreference) {
     Write-Plan "[$($srvRaiz.IPFinal)] Install-ADDSForest -DomainName $($domRaiz.FQDN) -DomainNetbiosName $($domRaiz.NetBIOS) -ForestMode/-DomainMode $nivel -InstallDns · reiniciar · esperar AD"
     Write-Log 'Fase C – Dominio hijo'
     Write-Plan "[$($srvHijo.IPFinal)] Install-ADDSDomain -NewDomainName $($domHijo.Etiqueta) -ParentDomainName $($domRaiz.FQDN) -DomainType ChildDomain -InstallDns -CreateDnsDelegation · reiniciar · esperar AD"
-    Write-Log 'Fase D – Servidor de archivos'
-    Write-Plan "[$($srvArchivos.IPFinal)] Add-Computer -DomainName $($domRaiz.FQDN) · reiniciar"
-    Write-Log 'Fase E – DNS definitivo y verificación'
+    Write-Log 'Fase D – DNS definitivo y verificación'
     foreach ($s in $Diseno.Servidores) { Write-Plan "[$($s.IPFinal)] DNS de cliente: $($s.DnsFinal -join ', ')" }
     Write-Plan "[$($srvRaiz.IPFinal)] verificar confianza $($domRaiz.FQDN) <-> $($domHijo.FQDN) (bidireccional, transitiva)"
     return 'Simulado'
@@ -62,7 +61,7 @@ if ($WhatIfPreference) {
 
 if (-not $Credencial) { throw 'Se requiere la credencial del despliegue.' }
 $cred = Get-CredencialesLab -Credencial $Credencial -Diseno $Diseno
-$todas = @($cred.Local, $cred.Raiz, $cred.Hijo)
+$todas = @(@($cred.Local) + @($cred.LocalAlternativas) + @($cred.Raiz, $cred.Hijo))
 Set-HostsConfiables -IPs @($Diseno.Servidores | ForEach-Object { $_.IPActual, $_.IPFinal })
 
 # =====================================================================
@@ -95,14 +94,15 @@ $bloquePreparar = {
         $res.ReinicioPorRoles = ([string]$r.RestartNeeded -eq 'Yes')
     }
     if ($ZonaHoraria) {
-        if ((Get-TimeZone).Id -ne $ZonaHoraria) { Set-TimeZone -Id $ZonaHoraria }
-        $res.ZonaHoraria = (Get-TimeZone).Id
+        # tzutil funciona en todas las versiones (Set-TimeZone requiere PowerShell 5.1)
+        if ((& tzutil.exe /g) -ne $ZonaHoraria) { & tzutil.exe /s $ZonaHoraria }
+        $res.ZonaHoraria = (& tzutil.exe /g)
     }
     if ($env:COMPUTERNAME -ne $Nombre) {
         Rename-Computer -NewName $Nombre -Force -WarningAction SilentlyContinue
         $res.Renombrado = $true
     }
-    [pscustomobject]$res
+    New-Object PSObject -Property $res
 }
 
 $bloqueProgramarCambioIP = {
@@ -158,6 +158,9 @@ $bloqueForest = {
     }
     if ($Nivel -and $Nivel -ne 'Default') { $p.ForestMode = $Nivel; $p.DomainMode = $Nivel }
     $r = Install-ADDSForest @p
+    # Tras la promoción el servidor ya no acepta la cuenta local hasta reiniciarse:
+    # el reinicio se programa en esta misma sesión, que ya está autenticada.
+    if ([string]$r.Status -eq 'Success') { & shutdown.exe /r /t 15 /f /d p:4:2 /c 'Promocion a controlador de dominio' | Out-Null }
     [pscustomobject]@{ Estado = [string]$r.Status; Mensaje = [string]$r.Message }
 }
 
@@ -175,15 +178,10 @@ $bloqueHijo = {
     }
     if ($Nivel -and $Nivel -ne 'Default') { $p.DomainMode = $Nivel }
     $r = Install-ADDSDomain @p
+    # Tras la promoción el servidor ya no acepta la cuenta local hasta reiniciarse:
+    # el reinicio se programa en esta misma sesión, que ya está autenticada.
+    if ([string]$r.Status -eq 'Success') { & shutdown.exe /r /t 15 /f /d p:4:2 /c 'Promocion a controlador de dominio' | Out-Null }
     [pscustomobject]@{ Estado = [string]$r.Status; Mensaje = [string]$r.Message }
-}
-
-$bloqueUnir = {
-    param([string]$FQDN, [pscredential]$CredRaiz)
-    $ErrorActionPreference = 'Stop'
-    try { $null = Resolve-DnsName -Name "_ldap._tcp.dc._msdcs.$FQDN" -Type SRV -DnsOnly }
-    catch { throw "Este servidor no resuelve los registros SRV de $FQDN. Verifique su DNS. ($($_.Exception.Message))" }
-    Add-Computer -DomainName $FQDN -Credential $CredRaiz -Force -WarningAction SilentlyContinue
 }
 
 $bloqueVerificar = {
@@ -247,6 +245,14 @@ foreach ($s in $Diseno.Servidores) {
     $con = Connect-Servidor -Servidor $s -Credenciales $todas -Intentos 3
     $estado = Get-Estado $con
     Write-Log "[$($con.Equipo)] $($estado.Nombre) · $($estado.SO) · dominio: $(if ($estado.ParteDominio) { $estado.Dominio } else { 'ninguno (grupo de trabajo)' })"
+    # El nivel funcional no puede superar la versión de Windows Server de los DC
+    $maximo = 'WinThreshold'
+    if ($estado.SO -match '2012 R2') { $maximo = 'Win2012R2' }
+    elseif ($estado.SO -match '2012') { $maximo = 'Win2012' }
+    $orden = @{ Win2012 = 1; Win2012R2 = 2; WinThreshold = 3 }
+    if ($nivel -ne 'Default' -and $orden[$nivel] -gt $orden[$maximo]) {
+        throw "$($s.Nombre) tiene $($estado.SO): el nivel funcional '$nivel' no está disponible. Ponga NivelFuncional = '$maximo' en config\lab.psd1 y vuelva a ejecutar."
+    }
 
     $prep = Invoke-EnServidor -Equipo $con.Equipo -Credencial $con.Credencial -Bloque $bloquePreparar `
         -Argumentos @(@($s.Roles), $s.Nombre, $zonaHoraria) -Descripcion "roles $($s.Roles -join ', '), zona horaria y nombre $($s.Nombre)"
@@ -290,7 +296,7 @@ else {
         -Argumentos @($domRaiz.FQDN, $domRaiz.NetBIOS, $nivel, $Credencial.Password) -Descripcion "Install-ADDSForest $($domRaiz.FQDN) (puede demorar varios minutos)"
     if ($r.Estado -ne 'Success') { throw "Install-ADDSForest terminó con estado '$($r.Estado)': $($r.Mensaje)" }
     Write-Log "Bosque $($domRaiz.FQDN) creado. Reiniciando $($srvRaiz.Nombre)..." -Nivel Ok
-    $null = Restart-YEsperar -Servidor $srvRaiz -Conexion $con
+    $null = Restart-YEsperar -Servidor $srvRaiz -Conexion $con -YaProgramado -Marca $estado.Ahora
 }
 Wait-ADDisponible -Equipo $srvRaiz.IPFinal -Credencial $cred.Raiz -Dominio $domRaiz.FQDN
 
@@ -310,31 +316,14 @@ else {
         -Argumentos @($domHijo.Etiqueta, $domRaiz.FQDN, $domHijo.NetBIOS, $nivel, $cred.Raiz, $Credencial.Password) -Descripcion "Install-ADDSDomain $($domHijo.FQDN) (puede demorar varios minutos)"
     if ($r.Estado -ne 'Success') { throw "Install-ADDSDomain terminó con estado '$($r.Estado)': $($r.Mensaje)" }
     Write-Log "Dominio hijo $($domHijo.FQDN) creado. Reiniciando $($srvHijo.Nombre)..." -Nivel Ok
-    $null = Restart-YEsperar -Servidor $srvHijo -Conexion $con
+    $null = Restart-YEsperar -Servidor $srvHijo -Conexion $con -YaProgramado -Marca $estado.Ahora
 }
 Wait-ADDisponible -Equipo $srvHijo.IPFinal -Credencial $cred.Hijo -Dominio $domHijo.FQDN
 
 # =====================================================================
-#  Fase D – Servidor de archivos miembro del dominio raíz
+#  Fase D – DNS definitivo y verificación
 # =====================================================================
-Write-Log "Fase D – $($srvArchivos.Nombre) al dominio $($domRaiz.FQDN)" -Nivel Paso
-$con = Connect-Servidor -Servidor $srvArchivos -Credenciales $todas
-$estado = Get-Estado $con
-if ($estado.ParteDominio -and $estado.Dominio -eq $domRaiz.FQDN) {
-    Write-Log "$($srvArchivos.Nombre) ya es miembro de $($domRaiz.FQDN); se omite." -Nivel Ok
-}
-else {
-    if ($estado.ParteDominio) { throw "$($srvArchivos.Nombre) pertenece a otro dominio ($($estado.Dominio))." }
-    $null = Invoke-EnServidor -Equipo $con.Equipo -Credencial $con.Credencial -Bloque $bloqueDnsCliente -Argumentos @($srvArchivos.IPFinal, @($srvArchivos.DnsInicial)) -Descripcion 'DNS -> DC raíz'
-    Invoke-EnServidor -Equipo $con.Equipo -Credencial $con.Credencial -Bloque $bloqueUnir -Argumentos @($domRaiz.FQDN, $cred.Raiz) -Descripcion "Add-Computer $($domRaiz.FQDN)"
-    Write-Log "$($srvArchivos.Nombre) unido a $($domRaiz.FQDN). Reiniciando..." -Nivel Ok
-    $null = Restart-YEsperar -Servidor $srvArchivos -Conexion $con
-}
-
-# =====================================================================
-#  Fase E – DNS definitivo y verificación
-# =====================================================================
-Write-Log 'Fase E – DNS de cliente definitivo y verificación' -Nivel Paso
+Write-Log 'Fase D – DNS de cliente definitivo y verificación' -Nivel Paso
 foreach ($s in $Diseno.Servidores) {
     $c = $cred.Raiz
     if ($s.Rol -eq 'DCHijo') { $c = $cred.Hijo }

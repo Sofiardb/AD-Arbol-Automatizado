@@ -1,146 +1,263 @@
 # AD-Arbol-Automatizado
 
-Despliegue automatizado con PowerShell de un árbol de **Active Directory** con **dominio padre e hijo**, **DNS integrado** y **acceso controlado de cuentas entre dominios** mediante la estrategia **AGUDLP** (permisos de recurso compartido y NTFS por grupo).
+**Implementación automatizada de una solución de Active Directory y DNS en un árbol con dominio padre e hijo, con acceso controlado de cuentas de un dominio a recursos del otro, mediante PowerShell.**
 
-Trabajo práctico – Administración Avanzada de Sistemas Operativos (AASO) – FACET – UNT.
+Proyecto Final – Administración Avanzada de Sistemas Operativos (AASO) – FACET – UNT.
 
-## Cómo funciona
+## Integrantes
+- Ason, Belén
+- Rodríguez del BustO, Sofía
 
-El usuario completa **un archivo de configuración y dos CSV**, ejecuta **un comando** e ingresa **una contraseña**. Todo lo demás (nombres, IP finales, OU, cuentas, grupos, recursos compartidos y permisos) se **deriva automáticamente**.
+---
 
-```powershell
-.\Deploy.ps1 -SoloDiseno   # 1) revisar el diseño (no toca servidores)
-.\Deploy.ps1 -WhatIf       # 2) ver qué haría cada paso, sin cambiar nada
-.\Deploy.ps1               # 3) desplegar todo
+## 1. Qué hace
+
+A partir de **un archivo de configuración y dos CSV**, un único comando (`.\Deploy.ps1`) despliega de punta a punta:
+
+1. Un **bosque de Active Directory** con un **dominio padre** (`andina.local`) y un **dominio hijo** (`recursos.andina.local`), cada uno con su controlador de dominio y **DNS integrado**.
+2. La **estructura lógica** del dominio padre (una OU por área) y el **alta masiva de cuentas** desde un CSV.
+3. Los **recursos compartidos** en el dominio hijo y el **acceso de las cuentas del padre** a esos recursos según una matriz de permisos, aplicando la estrategia **AGUDLP** con permisos de **recurso compartido y NTFS**.
+4. Un **equipo cliente** unido al dominio, preparado para demostrar los permisos iniciando sesión con distintos usuarios.
+5. Una **validación automática** que compara lo desplegado con el diseño, prueba el acceso real de una cuenta por área a cada recurso y genera un **informe HTML**.
+
+El usuario ingresa **una sola contraseña**; todo lo demás (nombres, IP, OU, cuentas, grupos, permisos) se **deriva** de la configuración.
+
+### Objetivos
+
+**General:** diseñar e implementar una solución automatizada con PowerShell que despliegue un árbol de Active Directory con dominio padre e hijo, DNS integrado y acceso controlado de cuentas de un dominio a recursos del otro.
+
+**Específicos** (cada uno corresponde a un módulo):
+
+| # | Objetivo específico | Módulo |
+|---|---|---|
+| 1 | Diseñar la arquitectura lógica y física | `01-Diseno` |
+| 2 | Automatizar la preparación de servidores y la creación del dominio raíz e hijo | `02-Despliegue` |
+| 3 | Automatizar la configuración y verificación de DNS (zonas, delegación, SRV, zonas inversas) | `03-DNS` |
+| 4 | Automatizar la estructura lógica y el alta masiva de cuentas | `04-Estructura` |
+| 5 | Dar acceso a las cuentas del padre sobre recursos del hijo con AGUDLP y permisos NTFS y de recurso compartido | `05-AccesoEntreDominios` (+ `06-Cliente` para la demostración) |
+| 6 | Validar automáticamente y documentar | `07-Validacion` |
+
+---
+
+## 2. Modelo de la solución
+
+```
+            Bosque andina.local
+ ┌──────────────────────────────┐    confianza padre-hijo   ┌────────────────────────────────────┐
+ │ andina.local  (PADRE)        │◄─────────────────────────►│ recursos.andina.local  (HIJO)      │
+ │ DC-RAIZ · CUENTAS            │  bidireccional/transitiva │ DC-HIJO · RECURSOS                 │
+ │                              │                           │                                    │
+ │ A  52 cuentas en OU por área │                           │ DL DL-<Recurso>-<Nivel>            │
+ │ G  GG-ANDINA-<Área> ─────────┼──── miembro de ──────────►│ P  \\DC-HIJO\<Recurso>             │
+ └──────────────────────────────┘                           │    (recurso compartido + NTFS)     │
+            ▲                                               └────────────────────────────────────┘
+            │ inicio de sesión con una cuenta del padre                ▲
+       CLIENTE01 (miembro de andina.local) ─────── acceso SMB ─────────┘
 ```
 
-| Paso | Módulo | Objetivo específico | Qué hace |
-|---|---|---|---|
-| 1 | `01-Diseno` | Diseñar la arquitectura lógica y física | Valida la configuración, deriva el diseño completo, genera tablas, diagramas y `diseno.html` |
-| 2 | `02-Despliegue` | Preparar servidores y crear dominio raíz e hijo | Roles, zona horaria, nombre, IP fija y reinicio; `Install-ADDSForest`; `Install-ADDSDomain` (hijo con delegación DNS); unión de SRV-ARCHIVOS; DNS definitivo; verificación de la confianza |
-| 3 | `03-DNS` | Configurar y verificar DNS | Zona inversa integrada en AD, PTR, reenviadores, delegación, scavenging; verificación SRV/A/PTR desde ambos DC |
-| 4 | `04-Estructura` | Estructura lógica y alta masiva de cuentas | OU por área + `Grupos`; alta/actualización de cuentas con atributos; contraseñas iniciales aleatorias |
-| 5 | `05-AccesoEntreDominios` | Acceso entre dominios con AGUDLP | Grupos globales en cada dominio, grupos de dominio local en el raíz con miembros de ambos dominios, recursos compartidos, NTFS y ABE |
-| 6 | `06-Validacion` | Validar y documentar | Compara el estado real con el diseño, `dcdiag`/`repadmin`, **pruebas de acceso reales** con cuentas temporales e informe HTML |
-
-Todos los pasos son **idempotentes** (comprueban el estado real y solo cambian lo necesario) y **reconcilian**: la pertenencia a grupos y los permisos quedan exactamente como dicen los CSV.
-
-## Escenario de ejemplo incluido
-
-**Distribuidora Andina S.A.**: casa central en el dominio raíz y red comercial en el dominio hijo.
-
-| | Dominio raíz `andina.local` | Dominio hijo `ventas.andina.local` |
-|---|---|---|
-| Áreas (OU) | Gerencia, Administracion, Finanzas, RRHH, IT, Legales | Comerciales, Supervisores, Postventa, Marketing, Logistica |
-| Cuentas | 21 | 31 |
-| Grupos | 6 globales + 20 de dominio local | 5 globales |
-
-- 10 recursos compartidos en `SRV-ARCHIVOS` (Comunicados, Lista-Precios, Reportes-Ventas, Contratos, Legajos, Facturacion, Stock, Material-Marketing, Manuales, Soporte-IT).
-- 46 reglas de acceso; 23 de ellas dan a grupos del dominio **hijo** acceso a recursos del dominio **padre**.
-- Incluye casos especiales: homónimos (`jperez`, `jperez2`), acentos y ñ (`Núñez` → `cnunez`), apellidos compuestos (`de la Fuente` → `sdelafuente`).
-
-## Configuración (`config/`)
-
-| Archivo | Contenido |
-|---|---|
-| `lab.psd1` | Empresa, dominio raíz, etiqueta del hijo, red (CIDR), gateway, reenviadores DNS, IP actual y rol de cada servidor, áreas por dominio. Opcionales: `ZonaHoraria`, `RutaRecursos`, `NivelFuncional`, `UsuarioAdministrador`, y por servidor `Nombre` e `IPFinal` |
-| `usuarios.csv` | `Nombre,Apellido,Dominio,Area,Cargo,Telefono,Oficina` (Dominio = `Raiz` o `Hijo`; las tres últimas columnas son opcionales) |
-| `accesos.csv` | `Recurso,Dominio,Area,Nivel` (Nivel = `Lectura` o `Modificar`): matriz de acceso de la que se derivan grupos y permisos |
-
-### Convenciones (valores derivados)
-
-| Elemento | Regla | Ejemplo |
-|---|---|---|
-| Dominio hijo | `<DominioHijo>.<DominioRaiz>` | `ventas.andina.local` |
-| NetBIOS | primera etiqueta en mayúsculas | `ANDINA`, `VENTAS` |
-| Servidores | `DC-RAIZ` (.10), `DC-HIJO` (.11), `SRV-ARCHIVOS` (.20) dentro de la red | `192.168.10.10` |
-| OU | una por área + `Grupos`, en el dominio correspondiente | `OU=Comerciales,DC=ventas,DC=andina,DC=local` |
-| Cuenta / UPN | inicial del nombre + apellido, sin acentos, minúsculas / `cuenta@dominio` | `jperez@ventas.andina.local` |
-| Grupo global | `GG-<NETBIOS>-<Area>` (en el dominio del área) | `GG-VENTAS-Comerciales` |
-| Grupo de dominio local | `DL-<Recurso>-<Nivel>` (en el dominio raíz) | `DL-Lista-Precios-Lectura` |
-| Recurso compartido | `\\SRV-ARCHIVOS\<Recurso>` → `C:\Recursos\<Recurso>` | `\\srv-archivos.andina.local\Lista-Precios` |
+- **Las cuentas se centralizan en el dominio padre** y **los recursos en el dominio hijo**. Los permisos se asignan **en un solo sentido**: cuentas del padre → recursos del hijo.
+- **AGUDLP**: **A**ccount (cuenta, en el padre) → **G**lobal group por área (en el padre) → **D**omain **L**ocal group por recurso y nivel (en el hijo) → **P**ermissions (recurso compartido y NTFS, en DC-HIJO). Un grupo de dominio local admite como miembros grupos globales de cualquier dominio del bosque; la confianza padre-hijo (automática, bidireccional y transitiva) permite resolverlos.
+- Ninguna cuenta recibe permisos directos: cambiar lo que puede hacer un usuario es cambiarlo de grupo, y cambiar lo que puede hacer un área es editar `accesos.csv` y volver a ejecutar el paso 5.
 
 ### Permisos (enfoque "por grupo")
 
-| Nivel | Recurso compartido | NTFS |
+| Nivel | Permiso del recurso compartido | Permiso NTFS |
 |---|---|---|
 | Lectura | Read | ReadAndExecute |
 | Modificar | Change | Modify |
 | Administradores | Full | FullControl (+ SYSTEM) |
 
-Se quita `Todos` (Everyone) del recurso compartido, se habilita la **enumeración basada en el acceso (ABE)** y se deshabilita la herencia NTFS de la carpeta. Las cuentas integradas se resuelven por SID, por lo que funciona también con Windows en español.
+Además: se quita `Todos` (Everyone) del recurso compartido, se deshabilita la herencia NTFS de cada carpeta y se activa la **enumeración basada en el acceso (ABE)**.
 
-## Requisitos
+---
 
-- Tres VM con **Windows Server 2016/2019/2022** recién instaladas (o 2012 R2 con WMF 5.1 y `NivelFuncional = 'Win2012R2'`), en la misma red, con la IP que figura en `IPActual`.
-- En las tres VM, **la contraseña del Administrador local debe ser la misma** y cumplir la complejidad: es la que se ingresa al ejecutar `Deploy.ps1` (también se usa como contraseña de modo de restauración, DSRM). Si las VM están en español, poner `UsuarioAdministrador = 'Administrador'` en `lab.psd1`.
-- PowerShell Remoting habilitado en las VM (`Enable-PSRemoting -Force`; viene habilitado por defecto en Windows Server). Si la red de la VM quedó como "Pública", ejecutar antes `Set-NetConnectionProfile -NetworkCategory Private`.
-- Un **equipo de administración** Windows (puede ser una cuarta VM o el host) en la misma red, desde el que se ejecuta `Deploy.ps1` **como administrador** con Windows PowerShell 5.1. No conviene ejecutarlo desde DC-RAIZ, porque se reinicia durante el paso 2.
-- El orquestador agrega las IP de los servidores a `TrustedHosts`. Si no tiene permisos para hacerlo:
-  ```powershell
-  Set-Item WSMan:\localhost\Client\TrustedHosts -Value '192.168.10.*' -Force
-  ```
-- Si la política de ejecución lo impide: `Set-ExecutionPolicy -Scope Process Bypass`.
+## 3. Estructura del repositorio
 
-**Duración aproximada del despliegue completo:** 30 a 45 minutos (la mayor parte son reinicios y promociones de DC).
-
-## Opciones del orquestador
-
-```powershell
-.\Deploy.ps1                 # todos los pasos (retoma desde el primero pendiente)
-.\Deploy.ps1 -SoloDiseno     # solo el paso 1
-.\Deploy.ps1 -Paso 4,5       # pasos indicados (siempre se recalcula el diseño antes)
-.\Deploy.ps1 -SoloValidar    # solo validación
-.\Deploy.ps1 -WhatIf         # simula los pasos 2 a 6
-.\Deploy.ps1 -Reiniciar      # ignora el estado guardado
+```
+Deploy.ps1                         Orquestador: ejecuta los pasos en orden, guarda el estado,
+                                   pide la contraseña una vez, registra todo en un log
+config/
+  lab.psd1                         Configuración del laboratorio (dominios, red, equipos, áreas)
+  usuarios.csv                     Empleados: Nombre, Apellido, Area, Cargo, Telefono, Oficina
+  accesos.csv                      Matriz de acceso: Recurso, Area, Nivel (Lectura | Modificar)
+modules/
+  00-Comun/Comun.psm1              Funciones compartidas: log, lectura de la configuración, estado,
+                                   credenciales, nombres de cuentas y grupos, cálculos de red, remoting
+  01-Diseno/Diseno.psm1            Validación de la configuración, cálculo del diseño completo,
+  01-Diseno/Invoke-Diseno.ps1        tablas, diagramas y guion de la demostración
+  02-Despliegue/Invoke-Despliegue.ps1      Paso 2: servidores, bosque y dominio hijo
+  03-DNS/Invoke-DNS.ps1                    Paso 3: zonas, registros, reenviadores, delegación, verificación
+  04-Estructura/Invoke-Estructura.ps1      Paso 4: OU y alta masiva de cuentas
+  05-AccesoEntreDominios/Invoke-Acceso.ps1 Paso 5: grupos AGUDLP, recursos compartidos y NTFS
+  06-Cliente/Invoke-Cliente.ps1            Paso 6: unión del cliente al dominio y kit de demostración
+  07-Validacion/Validacion.psm1            Paso 7: comparaciones diseño vs. estado real (funciones puras)
+  07-Validacion/Invoke-Validacion.ps1        recolección, pruebas de acceso reales e informe HTML
+demo/Probar-Permisos.ps1           Script que ejecuta el usuario en el cliente durante la demostración
+tools/Preparar-Equipo.ps1          Preparación única de cada VM antes del despliegue
+tests/Test-Offline.ps1             Pruebas automatizadas que no necesitan servidores
 ```
 
-Para agregar usuarios o accesos después del despliegue: editar los CSV y ejecutar `.\Deploy.ps1 -Paso 4,5,6`.
+La carpeta `output/` la genera el sistema en cada ejecución y no forma parte del repositorio (`.gitignore`).
 
-Cada módulo también se puede ejecutar solo (lee `output\diseno.json`), por ejemplo:
+---
 
-```powershell
-$c = Import-Clixml .\output\credencial.xml
-.\modules\06-Validacion\Invoke-Validacion.ps1 -Credencial $c -RutaSalida .\output -SinPruebasDeAcceso
-```
+## 4. Qué hace cada paso
 
-## Salidas (`output/`)
+| Paso | Qué hace | Cmdlets principales |
+|---|---|---|
+| **1 · Diseño** | Valida la configuración (frena antes de tocar nada si hay errores) y calcula el diseño completo: nombres e IP finales, DNS de cada equipo, OU, cuentas (con desambiguación de homónimos y quita de acentos), grupos AGUDLP, permisos, matriz de acceso y escenas de la demostración. Genera `diseno.json`, tablas CSV, diagramas Mermaid, `diseno.html` y `guion-demostracion.html`. | — |
+| **2 · Despliegue** | Prepara DC-RAIZ y DC-HIJO (roles, zona horaria, nombre, IP fija, DNS inicial, reinicio). Crea el bosque y el dominio padre en DC-RAIZ; crea el dominio hijo en DC-HIJO con delegación DNS en el padre. Configura el DNS definitivo y verifica la confianza padre-hijo y los maestros de operaciones. | `Install-WindowsFeature`, `Install-ADDSForest`, `Install-ADDSDomain`, `Get-ADTrust` |
+| **3 · DNS** | Zona inversa integrada en AD con replicación al bosque, registros PTR, reenviadores (el hijo reenvía al padre), delegación del hijo, envejecimiento y limpieza (scavenging). Verifica desde ambos DC los registros SRV de localización de DC, Kerberos y catálogo global, y los registros A y PTR. | `Add-DnsServerPrimaryZone`, `Add-DnsServerZoneDelegation`, `Set-DnsServerForwarder`, `Resolve-DnsName` |
+| **4 · Estructura y cuentas** | En el padre: una OU por área, OU `Grupos` y OU `Equipos`, y alta o actualización de las 52 cuentas con sus atributos (cargo, área, empresa, teléfono, oficina). En el hijo: OU `Grupos`. Si una cuenta cambia de área, la mueve; si hay cuentas que no están en el CSV, las informa sin borrarlas. | `New-ADOrganizationalUnit`, `New-ADUser`, `Set-ADUser`, `Move-ADObject` |
+| **5 · Acceso entre dominios** | Grupos globales por área en el padre; grupos de dominio local por recurso y nivel en el hijo, con los grupos globales del padre como miembros; carpetas compartidas en DC-HIJO con permisos de recurso compartido y NTFS. Reconcilia: quita lo que sobra y agrega lo que falta. | `New-ADGroup`, `Add-ADGroupMember`, `New-SmbShare`, `Grant-SmbShareAccess`, `Set-Acl` |
+| **6 · Cliente** | Une CLIENTE01 al dominio padre (OU `Equipos`) y le instala el kit de demostración: script **Probar mis permisos** y accesos directos a los recursos en el escritorio. | `Add-Computer` |
+| **7 · Validación** | Compara el estado real con el diseño (bosque, confianza, DNS, OU, cuentas, ámbito y pertenencia de cada grupo, permisos de cada recurso, cliente), ejecuta `dcdiag` y `repadmin`, y hace **pruebas de acceso reales**: crea una cuenta temporal por área, intenta listar, leer, escribir y borrar en cada recurso, compara con lo esperado y elimina las cuentas temporales. Genera el informe HTML. | `Get-AD*`, `Get-DnsServer*`, `Get-SmbShareAccess`, `Get-Acl` |
+
+Todo el trabajo en los servidores se hace por **PowerShell Remoting** desde un equipo de administración. Todos los pasos son **idempotentes**: comprueban el estado real y solo cambian lo necesario, por lo que se pueden volver a ejecutar; si un paso se interrumpe, la siguiente ejecución retoma desde el paso pendiente.
+
+---
+
+## 5. Datos de entrada (`config/`)
 
 | Archivo | Contenido |
 |---|---|
-| `diseno.json` | Diseño completo derivado (insumo de los pasos 2 a 6) |
-| `diseno/diseno.html` | Diagramas lógico y físico + tablas (servidores, usuarios, grupos, permisos, matriz de acceso) |
-| `diseno/*.csv`, `diseno/*.mmd` | Tablas y diagramas Mermaid para el documento del trabajo |
-| `despliegue.json` | Bosque, dominios, maestros de operaciones, catálogos globales y confianza resultantes |
-| `dns-verificacion.csv` | Resultado de cada consulta DNS del paso 3 |
-| `estructura-resultado.csv`, `acceso-resultado.csv` | Qué se creó, actualizó o quitó en los pasos 4 y 5 |
-| `credenciales-iniciales.csv` | Contraseñas iniciales de las cuentas nuevas (**entregar por canal seguro y eliminar**) |
-| `validacion/informe-validacion.html` | Informe de validación (resultado general, pruebas por categoría, fallas resaltadas) |
-| `validacion/resultados.csv` | Todas las pruebas de la validación |
-| `estado.json` | Pasos completados (para retomar) |
-| `logs/` | Log y transcripción de cada ejecución |
-| `credencial.xml` | Credencial temporal cifrada (DPAPI); se borra al completar el despliegue |
+| `lab.psd1` | Empresa, dominio raíz, etiqueta del hijo, red (CIDR), gateway, reenviadores DNS, IP actual y rol de cada servidor (`DCRaiz`, `DCHijo`), cliente, áreas y contraseña de la demostración. Opcionales: `ZonaHoraria`, `RutaRecursos`, `NivelFuncional`, `UsuarioAdministrador`. |
+| `usuarios.csv` | `Nombre,Apellido,Area,Cargo,Telefono,Oficina` (las tres últimas, opcionales). |
+| `accesos.csv` | `Recurso,Area,Nivel`: qué área accede a qué recurso y con qué nivel. De esta tabla se derivan los grupos y los permisos. |
 
-## Pruebas sin laboratorio
+### Valores derivados
+
+| Elemento | Regla | Ejemplo |
+|---|---|---|
+| Dominio hijo | `<DominioHijo>.<DominioRaiz>` | `recursos.andina.local` |
+| NetBIOS | primera etiqueta en mayúsculas | `ANDINA`, `RECURSOS` |
+| Equipos | `DC-RAIZ` (.10), `DC-HIJO` (.11), `CLIENTE01` (conserva su IP) | `192.168.10.10` |
+| OU (padre) | una por área + `Grupos` + `Equipos` | `OU=Finanzas,DC=andina,DC=local` |
+| Cuenta / UPN | inicial del nombre + apellido, sin acentos, en minúsculas; sufijo numérico si se repite | `scampos@andina.local`, `jperez2` |
+| Grupo global (padre) | `GG-<NETBIOS>-<Area>` | `GG-ANDINA-Finanzas` |
+| Grupo de dominio local (hijo) | `DL-<Recurso>-<Nivel>` | `DL-Lista-Precios-Modificar` |
+| Recurso compartido | `\\DC-HIJO\<Recurso>` → `C:\Recursos\<Recurso>` | `\\dc-hijo.recursos.andina.local\Lista-Precios` |
+
+### Escenario de ejemplo incluido
+
+**Distribuidora Andina S.A.**:
+- **Cuentas:** 52 empleados en 11 áreas (Gerencia, Administración, Finanzas, RRHH, IT, Legales, Comerciales, Supervisores, Postventa, Marketing, Logística).
+- **Recursos:** 10 recursos compartidos (Comunicados, Lista-Precios, Reportes-Ventas, Contratos, Legajos, Facturacion, Stock, Material-Marketing, Manuales, Soporte-IT).
+- **Grupos derivados de las 46 reglas de acceso:**
+  - 11 grupos globales en el padre;
+  - 20 grupos de dominio local en el hijo;
+  - 46 anidamientos entre dominios.
+
+---
+
+## 6. Laboratorio
+
+Se probó en **VirtualBox** con una red *solo anfitrión* `192.168.10.0/24` sin DHCP y un único adaptador por VM:
+
+| VM | Sistema | Función | IP |
+|---|---|---|---|
+| DC-RAIZ | Windows Server 2012 R2 | Controlador del dominio padre `andina.local` (cuentas) + DNS | 192.168.10.101 → .10 |
+| DC-HIJO | Windows Server 2012 R2 | Controlador del dominio hijo `recursos.andina.local` + DNS + servidor de archivos | 192.168.10.102 → .11 |
+| CLIENTE01 | Windows 8.1 Pro | Equipo de la demostración, miembro del dominio padre | 192.168.10.150 |
+| ADMIN | Windows 8.1 | Equipo de administración desde el que se ejecuta `Deploy.ps1` (no se une al dominio) | 192.168.10.200 |
+
+**Compatibilidad:**
+- **Servidores:** Windows Server 2012, 2012 R2, 2016, 2019 y 2022.
+- **Cliente:** Windows 8, 8.1, 10 y 11 Pro, Enterprise o Education.
+- **Equipo de administración:** Windows PowerShell 3.0, 4.0 y 5.1, o PowerShell 7 en Windows.
+- **Idioma:** funciona con equipos en distintos idiomas, por ejemplo servidores en inglés y equipos de administración y cliente en español.
+
+### Preparación de las VM (una sola vez)
+
+1. Instalar cada VM desde su ISO (sin clonar) y configurar la IP fija de la tabla, la máscara `255.255.255.0` y la puerta de enlace `192.168.10.1`.
+2. En **cada VM** (servidores y cliente), en PowerShell como administrador:
+   ```powershell
+   Set-ExecutionPolicy -Scope Process Bypass -Force
+   .\tools\Preparar-Equipo.ps1
+   ```
+   Pide la contraseña del Administrador, que tiene que ser **la misma en todas las VM** y cumplir la complejidad. Deja la red como privada, habilita PowerShell Remoting con inicio automático, abre el puerto de WinRM y habilita la administración remota con cuentas locales. *Solo para laboratorio.*
+3. En `config/lab.psd1`, ajustar `NivelFuncional` a la versión de los servidores (`Win2012`, `Win2012R2` o `WinThreshold` para 2016 o posterior) y `UsuarioAdministrador` (`Administrator` o `Administrador`, según el idioma de los servidores).
+
+### Ejecución (en ADMIN, PowerShell como administrador)
 
 ```powershell
-pwsh -File .\tests\Test-Offline.ps1     # o: powershell -File .\tests\Test-Offline.ps1
+Set-ExecutionPolicy -Scope Process Bypass -Force
+Start-Service WinRM
+Set-Item WSMan:\localhost\Client\TrustedHosts -Value '192.168.10.*' -Force
+
+.\Deploy.ps1 -SoloDiseno     # paso 1: solo calcula el diseño, no toca las VM
+.\Deploy.ps1 -WhatIf         # muestra qué haría cada paso, sin cambiar nada
+.\Deploy.ps1                 # despliegue completo (pide la contraseña del Administrador)
 ```
 
-Verifica, en cualquier equipo y sin servidores: cálculos de red y nombres, rechazo de configuraciones inválidas, el diseño derivado, la lógica de validación (un estado correcto da 0 fallas y 11 tipos de defecto inyectados se detectan) y los bloques remotos de los pasos 4 y 5 ejecutados contra un Active Directory simulado en memoria (alta, idempotencia y reconciliación). Resultado actual: **44/44**.
+| Opción | Efecto |
+|---|---|
+| `.\Deploy.ps1` | Ejecuta los pasos pendientes en orden |
+| `-Paso 4,5` | Ejecuta solo los pasos indicados |
+| `-SoloDiseno` / `-SoloValidar` | Solo el paso 1 / solo el paso 7 |
+| `-WhatIf` | Simulación de los pasos 2 a 7 |
+| `-Reiniciar` | Ignora el estado guardado y empieza de nuevo |
 
-## Estructura
+Duración aproximada: pasos 2 y 3 (creación de los dominios), entre 30 y 40 minutos; pasos 4 a 7, entre 8 y 12 minutos.
 
+---
+
+## 7. Demostración
+
+`Deploy.ps1 -SoloDiseno` genera `output/diseno/guion-demostracion.html` con el guion completo. Con el escenario incluido (todas las cuentas con la contraseña de la demo definida en `lab.psd1`):
+
+| Escena | Cuenta | Recurso | Resultado esperado |
+|---|---|---|---|
+| 1 | `ANDINA\scampos` (Finanzas) | Lista-Precios | **Modificar**: crea, edita y borra archivos |
+| 2 | `ANDINA\cnunez` (Gerencia) | Lista-Precios | **Lectura**: abre y lee; al guardar, "Acceso denegado" |
+| 3 | `ANDINA\lortiz` (Administración) | Lista-Precios | **Sin acceso**: no puede abrir la carpeta |
+| 4 | `ANDINA\cnunez` (Gerencia) | Comunicados | **Modificar**: el mismo usuario sí escribe en otro recurso |
+
+En el escritorio del cliente, **Probar mis permisos** (`demo/Probar-Permisos.ps1`) muestra la cuenta, sus grupos globales y una tabla con lo que puede hacer en cada recurso, y explica la cadena AGUDLP que le da cada permiso. Los grupos de dominio local del hijo no aparecen en `whoami /groups` en el cliente porque se agregan al token recién cuando la cuenta se autentica en DC-HIJO.
+
+---
+
+## 8. Salidas (`output/`)
+
+| Archivo | Contenido |
+|---|---|
+| `diseno.json` | Diseño completo derivado (lo usan los pasos 2 a 7) |
+| `diseno/diseno.html` | Diagramas lógico y físico, matriz área × recurso, cuentas, grupos y permisos |
+| `diseno/guion-demostracion.html` | Guion de la demostración |
+| `diseno/*.csv`, `diseno/*.mmd` | Tablas y diagramas Mermaid para el documento del trabajo |
+| `despliegue.json` | Bosque, dominios, maestros de operaciones, catálogos globales y confianza |
+| `dns-verificacion.csv` | Resultado de cada consulta DNS del paso 3 |
+| `estructura-resultado.csv`, `acceso-resultado.csv` | Qué se creó, actualizó o quitó en los pasos 4 y 5 |
+| `validacion/informe-validacion.html` | Informe de validación con el resultado de cada prueba |
+| `logs/` | Log y transcripción de cada ejecución |
+
+---
+
+## 9. Pruebas sin laboratorio
+
+```powershell
+powershell -File .\tests\Test-Offline.ps1
 ```
-Deploy.ps1                                 orquestador (pasos, estado, log, credencial)
-config/                                    lab.psd1, usuarios.csv, accesos.csv
-modules/00-Comun/Comun.psm1                log, configuración, estado, credenciales, nombres, red, remoting
-modules/01-Diseno/                         validación de la configuración, diseño derivado, tablas y diagramas
-modules/02-Despliegue/Invoke-Despliegue.ps1     servidores, bosque, dominio hijo, unión al dominio
-modules/03-DNS/Invoke-DNS.ps1                   zonas, registros, reenviadores, delegación, verificación
-modules/04-Estructura/Invoke-Estructura.ps1     OU y cuentas
-modules/05-AccesoEntreDominios/Invoke-Acceso.ps1  AGUDLP, recursos compartidos, NTFS
-modules/06-Validacion/                     Validacion.psm1 (comparaciones) + Invoke-Validacion.ps1 (recolección, pruebas de acceso, informe)
-tests/Test-Offline.ps1                     pruebas sin laboratorio
-output/                                    generado por el sistema
-```
+
+Verifican, sin servidores:
+- **Configuración y cálculos:** cálculos de red, generación de nombres de cuenta, rechazo de configuraciones inválidas y el diseño derivado.
+- **Validación:** un estado correcto da 0 fallas y se detectan 11 tipos de defectos inyectados.
+- **Pasos 4 y 5:** sus bloques remotos se ejecutan contra un Active Directory simulado en memoria y se comprueban el alta, la idempotencia y la reconciliación.
+
+Resultado: **51/51**.
+
+---
+
+## 10. Decisiones técnicas
+
+- **Una sola contraseña.** Se pide una vez y se guarda cifrada (DPAPI) durante el despliegue. El Administrador local del primer DC de cada dominio pasa a ser el administrador del dominio, por eso las credenciales de dominio se derivan de ella.
+- **Reinicios controlados.** El cambio de IP se delega en una tarea programada que corre como SYSTEM, porque corta la sesión remota. Las promociones a DC programan su propio reinicio en la misma sesión. El orquestador espera a que cada servidor vuelva antes de seguir.
+- **Idempotencia y reconciliación.** Cada operación compara el estado real con el deseado antes de actuar, y la pertenencia a grupos y los permisos quedan exactamente como dicen los CSV.
+- **Compatibilidad entre versiones e idiomas:**
+  - las cuentas integradas se identifican por SID;
+  - las sesiones remotas se abren con el idioma instalado en cada servidor;
+  - la zona horaria se cambia con `tzutil`;
+  - el archivo de configuración se lee en modo de lenguaje restringido (solo datos) y sin requerir PowerShell 5.
+- **Validación independiente de la implementación.** Las comparaciones son funciones puras sobre datos recolectados, por eso se pueden probar sin laboratorio. Además, las pruebas de acceso usan cuentas reales con una sesión nueva por cuenta, igual que un usuario en el cliente.
+
+> La contraseña de la demostración (`ContrasenaDemo` en `lab.psd1`) y `tools/Preparar-Equipo.ps1` simplifican el laboratorio. Si se quita `ContrasenaDemo`, cada cuenta recibe una contraseña aleatoria que debe cambiarse en el primer inicio de sesión.

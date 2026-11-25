@@ -1,53 +1,53 @@
-﻿Nombre,Apellido,Dominio,Area,Cargo,Telefono,Oficina
-Carlos,Núñez,Raiz,Gerencia,Gerente General,+54 381 430-2100,Casa Central - Tucumán
-Patricia,Albornoz,Raiz,Gerencia,Gerente Comercial,+54 381 430-2101,Casa Central - Tucumán
-Ricardo,Medina,Raiz,Gerencia,Gerente de Operaciones,+54 381 430-2102,Casa Central - Tucumán
-Lucía,Ortiz,Raiz,Administracion,Jefa de Administración,+54 381 430-2110,Casa Central - Tucumán
-Gabriela,Sosa,Raiz,Administracion,Analista de Facturación,+54 381 430-2111,Casa Central - Tucumán
-Martín,Correa,Raiz,Administracion,Analista de Cuentas a Pagar,+54 381 430-2112,Casa Central - Tucumán
-Florencia,Ledesma,Raiz,Administracion,Administrativa,+54 381 430-2113,Casa Central - Tucumán
-Diego,Villafañe,Raiz,Administracion,Recepcionista,+54 381 430-2114,Casa Central - Tucumán
-Silvia,Campos,Raiz,Finanzas,Jefa de Finanzas,+54 381 430-2120,Casa Central - Tucumán
-Hernán,Juárez,Raiz,Finanzas,Analista Contable,+54 381 430-2121,Casa Central - Tucumán
-Valeria,Paz,Raiz,Finanzas,Tesorera,+54 381 430-2122,Casa Central - Tucumán
-Sebastián,de la Fuente,Raiz,Finanzas,Analista de Costos,+54 381 430-2123,Casa Central - Tucumán
-Mónica,Herrera,Raiz,RRHH,Jefa de Recursos Humanos,+54 381 430-2130,Casa Central - Tucumán
-Pablo,Acosta,Raiz,RRHH,Analista de Liquidación de Sueldos,+54 381 430-2131,Casa Central - Tucumán
-Romina,Figueroa,Raiz,RRHH,Analista de Selección,+54 381 430-2132,Casa Central - Tucumán
-Luis,Díaz,Raiz,IT,Jefe de Sistemas,+54 381 430-2140,Casa Central - Tucumán
-Facundo,Ibáñez,Raiz,IT,Administrador de Infraestructura,+54 381 430-2141,Casa Central - Tucumán
-Agustina,Romano,Raiz,IT,Analista de Soporte,+54 381 430-2142,Casa Central - Tucumán
-Tomás,Gutiérrez,Raiz,IT,Técnico de Soporte,+54 381 430-2143,Casa Central - Tucumán
-Inés,Robles,Raiz,Legales,Abogada,+54 381 430-2150,Casa Central - Tucumán
-Gonzalo,Peña,Raiz,Legales,Asistente Legal,+54 381 430-2151,Casa Central - Tucumán
-Juan,Pérez,Hijo,Comerciales,Vendedor,+54 381 430-3101,Sucursal Tucumán
-María,Fernández,Hijo,Comerciales,Vendedora,+54 381 430-3102,Sucursal Tucumán
-Jorge,Castro,Hijo,Comerciales,Vendedor,+54 381 430-3103,Sucursal Tucumán
-Camila,Ruiz,Hijo,Comerciales,Vendedora,+54 381 430-3104,Sucursal Tucumán
-Nicolás,Aráoz,Hijo,Comerciales,Ejecutivo de Cuentas Clave,+54 381 430-3105,Sucursal Tucumán
-Daniela,Molina,Hijo,Comerciales,Vendedora,+54 387 421-4101,Sucursal Salta
-Federico,Rojas,Hijo,Comerciales,Vendedor,+54 387 421-4102,Sucursal Salta
-Carolina,Guzmán,Hijo,Comerciales,Vendedora,+54 387 421-4103,Sucursal Salta
-Emiliano,Quiroga,Hijo,Comerciales,Vendedor,+54 387 421-4104,Sucursal Salta
-Natalia,Zerpa,Hijo,Comerciales,Vendedora,+54 388 422-5101,Sucursal Jujuy
-Matías,Cruz,Hijo,Comerciales,Vendedor,+54 388 422-5102,Sucursal Jujuy
-Andrea,Vargas,Hijo,Comerciales,Vendedora,+54 388 422-5103,Sucursal Jujuy
-Ana,Gómez,Hijo,Supervisores,Supervisora Regional NOA,+54 381 430-3110,Sucursal Tucumán
-Raúl,Mendoza,Hijo,Supervisores,Supervisor Sucursal Tucumán,+54 381 430-3111,Sucursal Tucumán
-Lorena,Chávez,Hijo,Supervisores,Supervisora Sucursal Salta,+54 387 421-4110,Sucursal Salta
-Marcelo,Toledo,Hijo,Supervisores,Supervisor Sucursal Jujuy,+54 388 422-5110,Sucursal Jujuy
-Julieta,Pérez,Hijo,Postventa,Responsable de Postventa,+54 381 430-3120,Sucursal Tucumán
-Ezequiel,Luna,Hijo,Postventa,Operador de Atención al Cliente,+54 381 430-3121,Sucursal Tucumán
-Micaela,Vera,Hijo,Postventa,Operadora de Atención al Cliente,+54 381 430-3122,Sucursal Tucumán
-Bruno,Cabrera,Hijo,Postventa,Técnico de Garantías,+54 387 421-4120,Sucursal Salta
-Sofía,Ávila,Hijo,Postventa,Operadora de Atención al Cliente,+54 388 422-5120,Sucursal Jujuy
-Victoria,Benítez,Hijo,Marketing,Jefa de Marketing,+54 381 430-3130,Sucursal Tucumán
-Ignacio,Ponce,Hijo,Marketing,Diseñador Gráfico,+54 381 430-3131,Sucursal Tucumán
-Paula,Navarro,Hijo,Marketing,Community Manager,+54 381 430-3132,Sucursal Tucumán
-Leandro,Ríos,Hijo,Marketing,Analista de Trade Marketing,+54 381 430-3133,Sucursal Tucumán
-Gustavo,Morales,Hijo,Logistica,Jefe de Logística,+54 381 430-3140,Centro de Distribución
-Cecilia,Soria,Hijo,Logistica,Encargada de Depósito,+54 381 430-3141,Centro de Distribución
-Ramiro,Coronel,Hijo,Logistica,Operario de Depósito,+54 381 430-3142,Centro de Distribución
-Daniel,Barrionuevo,Hijo,Logistica,Coordinador de Distribución,+54 381 430-3143,Centro de Distribución
-Brenda,Salas,Hijo,Logistica,Administrativa de Logística,+54 381 430-3144,Centro de Distribución
-Alejandro,Maldonado,Hijo,Logistica,Chofer Repartidor,+54 381 430-3145,Centro de Distribución
+﻿Nombre,Apellido,Area,Cargo,Telefono,Oficina
+Carlos,Núñez,Gerencia,Gerente General,+54 381 430-2100,Casa Central - Tucumán
+Patricia,Albornoz,Gerencia,Gerente Comercial,+54 381 430-2101,Casa Central - Tucumán
+Ricardo,Medina,Gerencia,Gerente de Operaciones,+54 381 430-2102,Casa Central - Tucumán
+Lucía,Ortiz,Administracion,Jefa de Administración,+54 381 430-2110,Casa Central - Tucumán
+Gabriela,Sosa,Administracion,Analista de Facturación,+54 381 430-2111,Casa Central - Tucumán
+Martín,Correa,Administracion,Analista de Cuentas a Pagar,+54 381 430-2112,Casa Central - Tucumán
+Florencia,Ledesma,Administracion,Administrativa,+54 381 430-2113,Casa Central - Tucumán
+Diego,Villafañe,Administracion,Recepcionista,+54 381 430-2114,Casa Central - Tucumán
+Silvia,Campos,Finanzas,Jefa de Finanzas,+54 381 430-2120,Casa Central - Tucumán
+Hernán,Juárez,Finanzas,Analista Contable,+54 381 430-2121,Casa Central - Tucumán
+Valeria,Paz,Finanzas,Tesorera,+54 381 430-2122,Casa Central - Tucumán
+Sebastián,de la Fuente,Finanzas,Analista de Costos,+54 381 430-2123,Casa Central - Tucumán
+Mónica,Herrera,RRHH,Jefa de Recursos Humanos,+54 381 430-2130,Casa Central - Tucumán
+Pablo,Acosta,RRHH,Analista de Liquidación de Sueldos,+54 381 430-2131,Casa Central - Tucumán
+Romina,Figueroa,RRHH,Analista de Selección,+54 381 430-2132,Casa Central - Tucumán
+Luis,Díaz,IT,Jefe de Sistemas,+54 381 430-2140,Casa Central - Tucumán
+Facundo,Ibáñez,IT,Administrador de Infraestructura,+54 381 430-2141,Casa Central - Tucumán
+Agustina,Romano,IT,Analista de Soporte,+54 381 430-2142,Casa Central - Tucumán
+Tomás,Gutiérrez,IT,Técnico de Soporte,+54 381 430-2143,Casa Central - Tucumán
+Inés,Robles,Legales,Abogada,+54 381 430-2150,Casa Central - Tucumán
+Gonzalo,Peña,Legales,Asistente Legal,+54 381 430-2151,Casa Central - Tucumán
+Juan,Pérez,Comerciales,Vendedor,+54 381 430-3101,Sucursal Tucumán
+María,Fernández,Comerciales,Vendedora,+54 381 430-3102,Sucursal Tucumán
+Jorge,Castro,Comerciales,Vendedor,+54 381 430-3103,Sucursal Tucumán
+Camila,Ruiz,Comerciales,Vendedora,+54 381 430-3104,Sucursal Tucumán
+Nicolás,Aráoz,Comerciales,Ejecutivo de Cuentas Clave,+54 381 430-3105,Sucursal Tucumán
+Daniela,Molina,Comerciales,Vendedora,+54 387 421-4101,Sucursal Salta
+Federico,Rojas,Comerciales,Vendedor,+54 387 421-4102,Sucursal Salta
+Carolina,Guzmán,Comerciales,Vendedora,+54 387 421-4103,Sucursal Salta
+Emiliano,Quiroga,Comerciales,Vendedor,+54 387 421-4104,Sucursal Salta
+Natalia,Zerpa,Comerciales,Vendedora,+54 388 422-5101,Sucursal Jujuy
+Matías,Cruz,Comerciales,Vendedor,+54 388 422-5102,Sucursal Jujuy
+Andrea,Vargas,Comerciales,Vendedora,+54 388 422-5103,Sucursal Jujuy
+Ana,Gómez,Supervisores,Supervisora Regional NOA,+54 381 430-3110,Sucursal Tucumán
+Raúl,Mendoza,Supervisores,Supervisor Sucursal Tucumán,+54 381 430-3111,Sucursal Tucumán
+Lorena,Chávez,Supervisores,Supervisora Sucursal Salta,+54 387 421-4110,Sucursal Salta
+Marcelo,Toledo,Supervisores,Supervisor Sucursal Jujuy,+54 388 422-5110,Sucursal Jujuy
+Julieta,Pérez,Postventa,Responsable de Postventa,+54 381 430-3120,Sucursal Tucumán
+Ezequiel,Luna,Postventa,Operador de Atención al Cliente,+54 381 430-3121,Sucursal Tucumán
+Micaela,Vera,Postventa,Operadora de Atención al Cliente,+54 381 430-3122,Sucursal Tucumán
+Bruno,Cabrera,Postventa,Técnico de Garantías,+54 387 421-4120,Sucursal Salta
+Sofía,Ávila,Postventa,Operadora de Atención al Cliente,+54 388 422-5120,Sucursal Jujuy
+Victoria,Benítez,Marketing,Jefa de Marketing,+54 381 430-3130,Sucursal Tucumán
+Ignacio,Ponce,Marketing,Diseñador Gráfico,+54 381 430-3131,Sucursal Tucumán
+Paula,Navarro,Marketing,Community Manager,+54 381 430-3132,Sucursal Tucumán
+Leandro,Ríos,Marketing,Analista de Trade Marketing,+54 381 430-3133,Sucursal Tucumán
+Gustavo,Morales,Logistica,Jefe de Logística,+54 381 430-3140,Centro de Distribución
+Cecilia,Soria,Logistica,Encargada de Depósito,+54 381 430-3141,Centro de Distribución
+Ramiro,Coronel,Logistica,Operario de Depósito,+54 381 430-3142,Centro de Distribución
+Daniel,Barrionuevo,Logistica,Coordinador de Distribución,+54 381 430-3143,Centro de Distribución
+Brenda,Salas,Logistica,Administrativa de Logística,+54 381 430-3144,Centro de Distribución
+Alejandro,Maldonado,Logistica,Chofer Repartidor,+54 381 430-3145,Centro de Distribución

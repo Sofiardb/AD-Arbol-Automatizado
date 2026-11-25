@@ -1,18 +1,20 @@
-﻿#Requires -Version 5.1
+﻿#Requires -Version 3.0
 <#
 .SYNOPSIS
     Paso 4 – Estructura lógica y alta masiva de cuentas (objetivo específico 4).
 
 .DESCRIPTION
-    En cada dominio (se ejecuta en su DC):
-      - Crea una OU por área y la OU "Grupos" (protegidas contra borrado accidental).
+    Dominio PADRE (cuentas), en DC-RAIZ:
+      - Crea una OU por área, la OU "Grupos" y la OU "Equipos" (protegidas contra borrado accidental).
       - Da de alta las cuentas de usuarios.csv en la OU de su área, con nombre, UPN, cargo,
-        área, empresa, teléfono y oficina; contraseña inicial aleatoria y cambio obligatorio
-        en el primer inicio de sesión.
+        área, empresa, teléfono y oficina. Contraseña: la ContrasenaDemo de lab.psd1 (sin cambio
+        obligatorio, para la demostración) o una aleatoria con cambio en el primer inicio de sesión.
+    Dominio HIJO (recursos), en DC-HIJO:
+      - Crea la OU "Grupos" para los grupos de dominio local. No tiene cuentas de usuario.
       - Si la cuenta ya existe: actualiza los atributos que cambiaron y la mueve de OU si cambió de área.
       - Informa las cuentas que están en las OU de área pero no figuran en usuarios.csv (no las borra).
 
-    Las contraseñas de las cuentas NUEVAS se guardan en output\credenciales-iniciales.csv
+    Con contraseñas aleatorias, las de las cuentas NUEVAS se guardan en output\credenciales-iniciales.csv
     para entregarlas a los usuarios. Ese archivo debe resguardarse y eliminarse luego.
 #>
 [CmdletBinding(SupportsShouldProcess)]
@@ -41,7 +43,7 @@ if ($WhatIfPreference) {
         Write-Log "[$($d.Servidor.Nombre)] $($d.Info.FQDN): $($ous.Count) OU y $($usuarios.Count) cuentas"
         foreach ($ou in $ous) {
             $n = @($usuarios | Where-Object { $_.Area -eq $ou.Nombre }).Count
-            Write-Plan "OU $($ou.DN)$(if ($ou.Nombre -ne 'Grupos') { " ($n cuentas)" })"
+            Write-Plan "OU $($ou.DN)$(if ($ou.Nombre -notin 'Grupos', 'Equipos') { " ($n cuentas)" })"
         }
         foreach ($u in $usuarios | Select-Object -First 3) { Write-Plan "cuenta $($u.NetBIOS)\$($u.Sam) ($($u.UPN)) · $($u.NombreCompleto) · $($u.Cargo) · $($u.OU)" }
         if ($usuarios.Count -gt 3) { Write-Plan "... y $($usuarios.Count - 3) cuentas más (ver output\diseno\usuarios.csv)" }
@@ -56,7 +58,7 @@ $cred = Get-CredencialesLab -Credencial $Credencial -Diseno $Diseno
 #  Bloque remoto (se ejecuta en el DC de cada dominio)
 # =====================================================================
 $bloqueEstructura = {
-    param([object[]]$OUs, [object[]]$Usuarios)
+    param([object[]]$OUs, [object[]]$Usuarios, [bool]$CambiarAlIniciar = $true)
     $ErrorActionPreference = 'Stop'
     Import-Module ActiveDirectory
 
@@ -65,8 +67,8 @@ $bloqueEstructura = {
         $existe = $true
         try { $null = Get-ADOrganizationalUnit -Identity $ou.DN } catch { $existe = $false }
         if (-not $existe) {
-            $desc = "Área $($ou.Nombre)"
-            if ($ou.Nombre -eq 'Grupos') { $desc = 'Grupos de seguridad (AGUDLP)' }
+            $desc = [string]$ou.Descripcion
+            if (-not $desc) { $desc = "Área $($ou.Nombre)" }
             New-ADOrganizationalUnit -Name $ou.Nombre -Path $ou.Padre -Description $desc -ProtectedFromAccidentalDeletion $true
         }
         [pscustomobject]@{ Tipo = 'OU'; Objeto = $ou.DN; Accion = $(if ($existe) { 'Existente' } else { 'Creada' }); Detalle = '' }
@@ -82,7 +84,7 @@ $bloqueEstructura = {
         if (-not $actual) {
             $p = @{
                 Name = $u.CN; SamAccountName = $u.Sam; Path = $u.OU; AccountPassword = $u.Password
-                ChangePasswordAtLogon = $true; Enabled = $true
+                ChangePasswordAtLogon = $CambiarAlIniciar; Enabled = $true
             }
             foreach ($atr in $mapa.Keys) { if ($u.($mapa[$atr])) { $p[$atr] = [string]$u.($mapa[$atr]) } }
             New-ADUser @p
@@ -113,7 +115,7 @@ $bloqueEstructura = {
 
     # --- Cuentas en las OU de área que no están en el diseño (solo se informan) ---
     $previstas = @($Usuarios | ForEach-Object { $_.Sam })
-    foreach ($ou in @($OUs | Where-Object { $_.Nombre -ne 'Grupos' })) {
+    foreach ($ou in @($OUs | Where-Object { $_.Nombre -notin 'Grupos', 'Equipos' })) {
         foreach ($x in @(Get-ADUser -SearchBase $ou.DN -SearchScope OneLevel -Filter *)) {
             if ($x.SamAccountName -notin $previstas) { [pscustomobject]@{ Tipo = 'Usuario'; Objeto = $x.SamAccountName; Accion = 'NoEnDiseno'; Detalle = $ou.DN } }
         }
@@ -124,17 +126,20 @@ $bloqueEstructura = {
 #  Ejecución por dominio
 # =====================================================================
 $archivoCred = Join-Path $RutaSalida 'credenciales-iniciales.csv'
+$contrasenaDemo = [string]$Diseno.Parametros.ContrasenaDemo
+if ($contrasenaDemo) { Write-Log 'Se usa la ContrasenaDemo de lab.psd1 para las cuentas nuevas, sin cambio obligatorio al iniciar sesión (solo laboratorio).' -Nivel Advertencia }
 $todos = New-Object System.Collections.Generic.List[object]
 
 foreach ($d in $dominios) {
     Write-Log "Dominio $($d.Info.FQDN) (en $($d.Servidor.Nombre))" -Nivel Paso
     $credDom = $cred.($d.Clave)
-    $ous = @($Diseno.OUs | Where-Object { $_.Dominio -eq $d.Clave } | ForEach-Object { [pscustomobject]@{ Nombre = $_.Nombre; DN = $_.DN; Padre = $_.Padre } })
+    $ous = @($Diseno.OUs | Where-Object { $_.Dominio -eq $d.Clave } | ForEach-Object { [pscustomobject]@{ Nombre = $_.Nombre; DN = $_.DN; Padre = $_.Padre; Descripcion = $_.Descripcion } })
 
-    # Contraseña inicial aleatoria para cada cuenta (solo se usa si la cuenta se crea)
+    # Contraseña inicial de cada cuenta (solo se usa si la cuenta se crea)
     $contrasenas = @{}
     $usuarios = @($Diseno.Usuarios | Where-Object { $_.Dominio -eq $d.Clave } | ForEach-Object {
-            $texto = New-ContrasenaAleatoria
+            $texto = $contrasenaDemo
+            if (-not $texto) { $texto = New-ContrasenaAleatoria }
             $contrasenas[$_.Sam] = $texto
             [pscustomobject]@{
                 Sam = $_.Sam; CN = $_.CN; Nombre = $_.Nombre; Apellido = $_.Apellido; NombreCompleto = $_.NombreCompleto; UPN = $_.UPN
@@ -143,11 +148,11 @@ foreach ($d in $dominios) {
             }
         })
 
-    $res = @(Invoke-EnServidor -Equipo $d.Servidor.IPFinal -Credencial $credDom -Bloque $bloqueEstructura -Argumentos @($ous, $usuarios) `
+    $res = @(Invoke-EnServidor -Equipo $d.Servidor.IPFinal -Credencial $credDom -Bloque $bloqueEstructura -Argumentos @($ous, $usuarios, (-not $contrasenaDemo)) `
             -Descripcion "$($ous.Count) OU y $($usuarios.Count) cuentas")
 
     $creados = @($res | Where-Object { $_.Tipo -eq 'Usuario' -and $_.Accion -eq 'Creado' })
-    if ($creados.Count) {
+    if ($creados.Count -and -not $contrasenaDemo) {
         $fecha = Get-Date -Format 's'
         $filas = foreach ($c in $creados) {
             $u = $Diseno.Usuarios | Where-Object { $_.Dominio -eq $d.Clave -and $_.Sam -eq $c.Objeto } | Select-Object -First 1

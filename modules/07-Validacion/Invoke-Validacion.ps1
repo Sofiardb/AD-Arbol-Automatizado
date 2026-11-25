@@ -1,25 +1,26 @@
-﻿#Requires -Version 5.1
+﻿#Requires -Version 3.0
 <#
 .SYNOPSIS
-    Paso 6 – Validación automática y documentación de resultados (objetivo específico 6).
+    Paso 7 – Validación automática y documentación de resultados (objetivo específico 6).
 
 .DESCRIPTION
-    1. Recolecta el estado real de DC-RAIZ, DC-HIJO y SRV-ARCHIVOS (solo lectura).
+    1. Recolecta el estado real de DC-RAIZ, DC-HIJO (dominios, DNS, recursos) y del cliente (solo lectura).
     2. Lo compara con el diseño (Validacion.psm1):
          bosque y dominios · confianza · catálogo global · nivel funcional · FSMO
          DNS (zonas, delegación, reenviadores, scavenging, SRV/A/PTR desde ambos DC)
          OU y cuentas · grupos globales y de dominio local (ámbito y pertenencia exacta)
          recursos compartidos, ABE, permisos del recurso compartido y NTFS
+         cliente: dominio, canal seguro, DNS y kit de demostración
     3. Diagnóstico de AD: dcdiag /q en ambos DC y repadmin /replsummary.
-    4. Pruebas de acceso REALES: crea una cuenta temporal por grupo global (más una sin grupos en cada
-       dominio), se conecta a cada recurso con esa cuenta e intenta listar, leer, escribir y borrar,
-       y compara con el nivel esperado. Al terminar elimina las cuentas y archivos de prueba.
+    4. Pruebas de acceso REALES: crea en el dominio padre una cuenta temporal por grupo global (más una
+       sin grupos), se conecta con cada una a cada recurso del dominio hijo e intenta listar, leer,
+       escribir y borrar, y compara con el nivel esperado. Al terminar elimina las cuentas y archivos de prueba.
     5. Genera output\validacion\informe-validacion.html y resultados.csv.
 
     Devuelve 'Completado' si no hay fallas, o 'Fallido' si hay al menos una.
 
 .PARAMETER SinPruebasDeAcceso
-    Omite el punto 4 (por ejemplo, si el equipo de administración no llega por SMB al servidor de archivos).
+    Omite el punto 4 (por ejemplo, si el equipo de administración no llega por SMB a DC-HIJO).
 #>
 [CmdletBinding(SupportsShouldProcess)]
 param(
@@ -36,7 +37,7 @@ $Diseno = Get-DisenoParaPaso -Diseno $Diseno -RutaSalida $RutaSalida
 
 $srvRaiz     = Get-ServidorDiseno -Diseno $Diseno -Rol DCRaiz
 $srvHijo     = Get-ServidorDiseno -Diseno $Diseno -Rol DCHijo
-$srvArchivos = Get-ServidorDiseno -Diseno $Diseno -Rol Archivos
+$srvArchivos = $srvHijo   # DC-HIJO aloja los recursos compartidos
 $domRaiz     = $Diseno.Dominios.Raiz
 $domHijo     = $Diseno.Dominios.Hijo
 $casos       = @(Get-CasosPrueba -Diseno $Diseno)
@@ -64,7 +65,7 @@ $recursos = @($Diseno.Recursos | ForEach-Object {
 #  Simulación
 # =====================================================================
 if ($WhatIfPreference) {
-    Write-Plan "leer el estado de $($srvRaiz.Nombre), $($srvHijo.Nombre) y $($srvArchivos.Nombre) (solo lectura)"
+    Write-Plan "leer el estado de $($srvRaiz.Nombre), $($srvHijo.Nombre)$(if ($Diseno.Cliente) { " y $($Diseno.Cliente.Nombre)" }) (solo lectura)"
     Write-Plan "comparar con el diseño: 2 dominios, $(@($Diseno.OUs).Count) OU, $(@($Diseno.Usuarios).Count) cuentas, $(@($Diseno.GruposGlobales).Count + @($Diseno.GruposDL).Count) grupos, $(@($Diseno.Recursos).Count) recursos, $($consultas.Count * 2) consultas DNS"
     Write-Plan 'dcdiag /q en ambos DC y repadmin /replsummary'
     Write-Plan "pruebas de acceso reales: $($casos.Count) cuentas temporales x $(@($Diseno.Recursos).Count) recursos = $($casos.Count * @($Diseno.Recursos).Count) combinaciones"
@@ -150,6 +151,18 @@ $bloqueEstadoAD = {
 $bloqueEstadoArchivos = {
     param([object[]]$Recursos)
     $ErrorActionPreference = 'Stop'
+    # En Windows Server 2012 la política de ejecución puede impedir que se cargue el módulo SmbShare
+    # en una sesión remota: se habilita solo para esta sesión y se carga explícitamente.
+    try { Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force -ErrorAction Stop } catch { }
+    # La sesión remota hereda el idioma del equipo que ejecuta Deploy.ps1 (por ejemplo es-ES); si el
+    # servidor está en otro idioma, SmbShare no encuentra sus textos. Se usa el idioma instalado en el servidor.
+    try {
+        [System.Threading.Thread]::CurrentThread.CurrentUICulture = [System.Globalization.CultureInfo]::InstalledUICulture
+        [System.Threading.Thread]::CurrentThread.CurrentCulture   = [System.Globalization.CultureInfo]::InstalledUICulture
+    }
+    catch { }
+    try { Import-Module SmbShare -ErrorAction Stop }
+    catch { throw "No se pudo cargar el módulo SmbShare en $env:COMPUTERNAME ($($_.Exception.Message)). Política de ejecución: $(Get-ExecutionPolicy -List | Out-String)" }
     $conocidos = @{ 'BUILTIN\Administrators' = 'S-1-5-32-544'; 'NT AUTHORITY\SYSTEM' = 'S-1-5-18'; 'Everyone' = 'S-1-1-0' }
     function Get-Sid([string]$Cuenta) {
         if ($conocidos.ContainsKey($Cuenta)) { return $conocidos[$Cuenta] }
@@ -206,40 +219,53 @@ $bloqueLimpiarArchivos = {
     foreach ($r in $Rutas) { Get-ChildItem -LiteralPath $r -Filter 'validacion-*.txt' -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue }
 }
 
-# =====================================================================
-#  Prueba de acceso desde el equipo de administración
-# =====================================================================
-function Invoke-PruebaAcceso {
-    param([string]$UNC, [pscredential]$CredencialPrueba, [string]$Sam)
-    $op = [ordered]@{ Lista = $false; Lee = $false; Escribe = $false; Borra = $null; Error = '' }
-    $unidad = 'VAL' + (Get-Random -Minimum 1000 -Maximum 9999)
-    $conectado = $false
-    for ($i = 1; $i -le 3 -and -not $conectado; $i++) {
-        try { New-PSDrive -Name $unidad -PSProvider FileSystem -Root $UNC -Credential $CredencialPrueba -ErrorAction Stop | Out-Null; $conectado = $true }
-        catch {
-            $op.Error = $_.Exception.Message
-            # 1219: queda abierta una conexión al mismo servidor con otra cuenta -> se cierra y se reintenta
-            if ($op.Error -match '1219|multiple connections|varias conexiones') {
-                Get-SmbMapping -ErrorAction SilentlyContinue | Where-Object { $_.RemotePath -like "$(($UNC -split '\\')[0..2] -join '\')\*" } | Remove-SmbMapping -Force -ErrorAction SilentlyContinue
-                Start-Sleep -Seconds 5
-            }
-            else { break }
-        }
-    }
-    if (-not $conectado) { return [pscustomobject]$op }
-    $op.Error = ''
+$bloqueEstadoCliente = {
+    param([string]$Carpeta, [string]$NombreCarpetaEscritorio)
+    $cs = Get-CimInstance Win32_ComputerSystem
+    $canal = $false
     try {
-        try { $null = Get-ChildItem -LiteralPath "${unidad}:\" -ErrorAction Stop; $op.Lista = $true } catch { }
-        try { $null = Get-Content -LiteralPath "${unidad}:\LEEME.txt" -ErrorAction Stop; $op.Lee = $true } catch { }
-        $archivo = "${unidad}:\validacion-$Sam.txt"
-        try { Set-Content -LiteralPath $archivo -Value "Prueba de escritura $(Get-Date -Format s)" -ErrorAction Stop; $op.Escribe = $true } catch { }
-        if ($op.Escribe) { try { Remove-Item -LiteralPath $archivo -Force -ErrorAction Stop; $op.Borra = $true } catch { $op.Borra = $false } }
+        # Test-ComputerSecureChannel no existe en PowerShell 7: en ese caso se usa nltest
+        if (Get-Command Test-ComputerSecureChannel -ErrorAction SilentlyContinue) { $canal = Test-ComputerSecureChannel }
+        elseif ($cs.PartOfDomain) { $null = & nltest.exe "/sc_query:$($cs.Domain)" 2>&1; $canal = ($LASTEXITCODE -eq 0) }
     }
-    finally {
-        Remove-PSDrive -Name $unidad -Force -ErrorAction SilentlyContinue
-        Get-SmbMapping -ErrorAction SilentlyContinue | Where-Object { $_.RemotePath -eq $UNC } | Remove-SmbMapping -Force -ErrorAction SilentlyContinue
+    catch { $canal = $false }
+    $dns = @(Get-DnsClientServerAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_.ServerAddresses } | Select-Object -First 1 | ForEach-Object { $_.ServerAddresses })
+    $escritorio = Join-Path $env:PUBLIC 'Desktop'
+    $esperados = @((Join-Path $Carpeta 'Probar-Permisos.ps1'), (Join-Path $Carpeta 'permisos-demo.json'), (Join-Path $escritorio 'Probar mis permisos.lnk'), (Join-Path $escritorio $NombreCarpetaEscritorio))
+    [pscustomobject]@{
+        Nombre = $env:COMPUTERNAME; ParteDominio = [bool]$cs.PartOfDomain; Dominio = ([string]$cs.Domain).ToLowerInvariant(); CanalSeguro = $canal
+        Dns = $dns; KitFaltante = @($esperados | Where-Object { -not (Test-Path -LiteralPath $_) } | ForEach-Object { Split-Path $_ -Leaf })
     }
-    return [pscustomobject]$op
+}
+
+# =====================================================================
+#  Prueba de acceso de una cuenta (se ejecuta en el cliente o en DC-RAIZ)
+# =====================================================================
+$bloquePruebaAcceso = {
+    # Se ejecuta en el equipo de prueba con una cuenta de administrador; las conexiones a los recursos
+    # se hacen con la credencial de la cuenta de prueba.
+    param([object[]]$Recursos, [pscredential]$CredPrueba, [string]$Sam)
+    foreach ($r in $Recursos) {
+        $op = [ordered]@{ Recurso = $r.Nombre; Lista = $false; Lee = $false; Escribe = $false; Borra = $null; Error = '' }
+        $unidad = 'VAL' + (Get-Random -Minimum 10000 -Maximum 99999)
+        $conectado = $false
+        try { New-PSDrive -Name $unidad -PSProvider FileSystem -Root $r.UNC -Credential $CredPrueba -ErrorAction Stop | Out-Null; $conectado = $true }
+        catch { $op.Error = $_.Exception.Message }
+        if ($conectado) {
+            try {
+                try { $null = Get-ChildItem -LiteralPath "${unidad}:\" -ErrorAction Stop; $op.Lista = $true } catch { $op.Error = "listar: $($_.Exception.Message)" }
+                try { $null = Get-Content -LiteralPath "${unidad}:\LEEME.txt" -ErrorAction Stop; $op.Lee = $true } catch { }
+                # Se escribe sobre la ruta UNC (usa la conexión ya abierta con la cuenta de prueba): en PowerShell 3.0,
+                # Set-Content sobre una unidad que apunta a un recurso compartido arma mal la ruta.
+                $archivo = "$($r.UNC)\validacion-$Sam.txt"
+                try { [System.IO.File]::WriteAllText($archivo, "Prueba de escritura $(Get-Date -Format s)"); $op.Escribe = $true }
+                catch { $op.Error = "escritura: $($_.Exception.InnerException.Message) $($_.Exception.Message)" }
+                if ($op.Escribe) { try { [System.IO.File]::Delete($archivo); $op.Borra = $true } catch { $op.Borra = $false; $op.Error = "borrado: $($_.Exception.Message)" } }
+            }
+            finally { Remove-PSDrive -Name $unidad -Force -ErrorAction SilentlyContinue }
+        }
+        New-Object PSObject -Property $op
+    }
 }
 
 # =====================================================================
@@ -260,10 +286,26 @@ foreach ($par in @(@('Raiz', $srvRaiz, $cred.Raiz, $true), @('Hijo', $srvHijo, $
 }
 $estadoArchivos = $null
 try {
-    $estadoArchivos = Invoke-EnServidor -Equipo $srvArchivos.IPFinal -Credencial $cred.Raiz -Bloque $bloqueEstadoArchivos -Argumentos @(, $recursos) -Descripcion 'recursos compartidos y NTFS'
+    $estadoArchivos = Invoke-EnServidor -Equipo $srvArchivos.IPFinal -Credencial $cred.Hijo -Bloque $bloqueEstadoArchivos -Argumentos @(, $recursos) -Descripcion 'recursos compartidos y NTFS'
     Add-R (New-Resultado 'Conectividad' "PowerShell Remoting a $($srvArchivos.Nombre) ($($srvArchivos.IPFinal))" 'conecta' 'conecta' 'OK')
 }
 catch { Add-R (New-Resultado 'Conectividad' "PowerShell Remoting a $($srvArchivos.Nombre) ($($srvArchivos.IPFinal))" 'conecta' $_.Exception.Message 'FALLA') }
+
+$estadoCliente = $null
+if ($Diseno.Cliente) {
+    $cli = $Diseno.Cliente
+    $argsCli = @($cli.CarpetaDemo, "Recursos de $($domHijo.FQDN)")
+    $ipsLocales = @()
+    try { $ipsLocales = @(Get-NetIPAddress -AddressFamily IPv4 -ErrorAction Stop | ForEach-Object { $_.IPAddress }) } catch { $ipsLocales = @() }
+    try {
+        if ($cli.IPActual -in $ipsLocales -or $cli.IPFinal -in $ipsLocales) { $estadoCliente = & $bloqueEstadoCliente @argsCli }
+        else {
+            $conCli = Connect-Servidor -Servidor $cli -Credenciales @(@($cred.($cli.DominioClave), $cred.Local) + @($cred.LocalAlternativas))
+            $estadoCliente = Invoke-EnServidor -Equipo $conCli.Equipo -Credencial $conCli.Credencial -Bloque $bloqueEstadoCliente -Argumentos $argsCli -Descripcion 'estado del cliente'
+        }
+    }
+    catch { Write-Log "No se pudo consultar el cliente: $($_.Exception.Message)" -Nivel Advertencia }
+}
 
 Write-Log 'Comparando con el diseño' -Nivel Paso
 if ($estados.Raiz -and $estados.Hijo) {
@@ -273,6 +315,7 @@ if ($estados.Raiz -and $estados.Hijo) {
 }
 foreach ($clave in 'Raiz', 'Hijo') { if ($estados[$clave]) { Add-R (Test-Estructura -Diseno $Diseno -Clave $clave -Estado $estados[$clave]) } }
 if ($estadoArchivos) { Add-R (Test-Recursos -Diseno $Diseno -EstadoArchivos $estadoArchivos) }
+Add-R (Test-Cliente -Diseno $Diseno -EstadoCliente $estadoCliente)
 
 # =====================================================================
 #  3. Diagnóstico de AD
@@ -320,11 +363,26 @@ else {
         }
         Write-Log 'Esperando 30 s para que las cuentas y la pertenencia a grupos estén disponibles...'
         Start-Sleep -Seconds 30
+        # Cada cuenta se prueba en una sesión remota NUEVA (en el cliente de la demo o, si no responde, en DC-RAIZ):
+        # cada sesión es un inicio de sesión distinto, así Windows no rechaza conectar al mismo servidor con
+        # varios usuarios (error 1219), y se accede igual que en la demostración, por el nombre DNS del servidor.
+        $equipoPrueba = $srvRaiz.IPFinal; $credEquipo = $cred.Raiz; $nombreEquipo = $srvRaiz.Nombre
+        if ($Diseno.Cliente -and (Test-PuertoAbierto -Equipo $Diseno.Cliente.IPFinal -Puerto 5985)) {
+            $equipoPrueba = $Diseno.Cliente.IPFinal; $credEquipo = $cred.($Diseno.Cliente.DominioClave); $nombreEquipo = $Diseno.Cliente.Nombre
+        }
+        Write-Log "Las pruebas de acceso se ejecutan en $nombreEquipo ($equipoPrueba), una sesión por cuenta."
+        $listaRecursos = @($Diseno.Recursos | ForEach-Object { [pscustomobject]@{ Nombre = $_.Nombre; UNC = $_.UNC } })
         foreach ($c in $casos) {
             $credPrueba = New-Object System.Management.Automation.PSCredential("$($c.NetBIOS)\$($c.Sam)", (ConvertTo-SecureString $claves[$c.Sam] -AsPlainText -Force))
+            $ops = @()
+            try {
+                $ops = @(Invoke-EnServidor -Equipo $equipoPrueba -Credencial $credEquipo -Bloque $bloquePruebaAcceso -Argumentos @($listaRecursos, $credPrueba, $c.Sam) -Descripcion "pruebas de acceso de $($c.NetBIOS)\$($c.Sam)")
+            }
+            catch { Write-Log "No se pudieron ejecutar las pruebas de $($c.Sam): $($_.Exception.Message)" -Nivel Error }
             $okCaso = 0
             foreach ($r in $Diseno.Recursos) {
-                $op = Invoke-PruebaAcceso -UNC "\\$($srvArchivos.IPFinal)\$($r.Nombre)" -CredencialPrueba $credPrueba -Sam $c.Sam
+                $op = @($ops | Where-Object { $_.Recurso -eq $r.Nombre })[0]
+                if (-not $op) { $op = New-Object PSObject -Property @{ Lista = $false; Lee = $false; Escribe = $false; Borra = $null; Error = 'sin resultado' } }
                 $fila = Test-ResultadoAcceso -Caso $c -Recurso $r.Nombre -Operaciones $op -Servidor $srvArchivos.Nombre
                 Add-R $fila
                 if ($fila.Resultado -eq 'OK') { $okCaso++ }
@@ -337,7 +395,7 @@ else {
         foreach ($k in 'Raiz', 'Hijo') {
             try { Invoke-EnServidor -Equipo $dcs[$k][0] -Credencial $dcs[$k][1] -Bloque $bloqueCuentasPrueba -Argumentos @('Eliminar', @()) -Descripcion 'eliminar cuentas temporales' } catch { Write-Log "No se pudieron eliminar las cuentas temporales en $k." -Nivel Advertencia }
         }
-        try { Invoke-EnServidor -Equipo $srvArchivos.IPFinal -Credencial $cred.Raiz -Bloque $bloqueLimpiarArchivos -Argumentos @(, @($Diseno.Recursos | ForEach-Object { $_.RutaLocal })) -Descripcion 'eliminar archivos de prueba' } catch { }
+        try { Invoke-EnServidor -Equipo $srvArchivos.IPFinal -Credencial $cred.Hijo -Bloque $bloqueLimpiarArchivos -Argumentos @(, @($Diseno.Recursos | ForEach-Object { $_.RutaLocal })) -Descripcion 'eliminar archivos de prueba' } catch { }
     }
 }
 

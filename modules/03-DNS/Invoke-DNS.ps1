@@ -1,11 +1,11 @@
-﻿#Requires -Version 5.1
+﻿#Requires -Version 3.0
 <#
 .SYNOPSIS
     Paso 3 – DNS: configura y verifica el DNS integrado en AD de ambos dominios (objetivo específico 3).
 
 .DESCRIPTION
     En DC-RAIZ (servidor DNS del dominio raíz):
-      - Zona inversa integrada en AD (replicación a todo el bosque) y registros PTR de los tres servidores.
+      - Zona inversa integrada en AD (replicación a todo el bosque) y registros PTR de ambos servidores.
       - Registro A del servidor de archivos (si no se registró dinámicamente).
       - Reenviadores hacia los DNS externos de lab.psd1.
       - Delegación de la zona del dominio hijo (la crea Install-ADDSDomain; acá se verifica y se repara).
@@ -64,7 +64,7 @@ if ($WhatIfPreference) {
     Write-Log "[$($srvRaiz.Nombre)] DNS del dominio raíz"
     Write-Plan "zona inversa $($red.ZonaInversa) (NetworkId $($red.NetworkIdZona), replicación: bosque, actualizaciones seguras)"
     foreach ($s in $servidores) { Write-Plan "PTR $($s.PTR).$($red.ZonaInversa) -> $($s.FQDN)" }
-    Write-Plan "registro A de $((Get-ServidorDiseno -Diseno $Diseno -Rol Archivos).FQDN) si no se registró dinámicamente"
+    Write-Plan "registros A de los servidores del dominio raíz si no se registraron dinámicamente"
     Write-Plan "reenviadores: $(if ($reenviadores.Count) { $reenviadores -join ', ' } else { '(ninguno)' })"
     Write-Plan "delegación $($domHijo.Etiqueta).$($domRaiz.FQDN) -> $($srvHijo.FQDN) ($($srvHijo.IPFinal))"
     Write-Plan 'scavenging cada 7 días y envejecimiento en las zonas del dominio y la inversa'
