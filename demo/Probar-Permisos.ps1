@@ -26,10 +26,15 @@
 param(
     [string[]]$Recurso,
     [switch]$DejarArchivo,
-    [string]$Configuracion = (Join-Path $PSScriptRoot 'permisos-demo.json')
+    [string]$Configuracion   # por defecto: permisos-demo.json junto a este script
 )
 
 $ErrorActionPreference = 'Stop'
+# En PowerShell 3.0 y 4.0, $PSScriptRoot puede llegar vacío a los valores por defecto de los parámetros
+# (por ejemplo, al ejecutar con powershell.exe -File desde un acceso directo): se calcula acá.
+$raiz = $PSScriptRoot
+if (-not $raiz) { $raiz = Split-Path -Parent $MyInvocation.MyCommand.Path }
+if (-not $Configuracion) { $Configuracion = Join-Path $raiz 'permisos-demo.json' }
 $cfg = Get-Content -Path $Configuracion -Raw -Encoding UTF8 | ConvertFrom-Json
 $rango = @{ SinAcceso = 0; Lectura = 1; Modificar = 2 }
 

@@ -107,6 +107,11 @@ $bloqueGruposDL = {
     param([object[]]$Grupos, [string]$DominioLocal, [pscredential]$CredBosque)
     $ErrorActionPreference = 'Stop'
     Import-Module ActiveDirectory
+    # Para agregar como miembro un grupo de OTRO dominio, este DC lo valida contra un catálogo global.
+    # DC-HIJO es catálogo global (lo es por defecto) y su copia parcial del dominio padre recibe los
+    # grupos globales recién creados por replicación: se fuerza la replicación entrante antes de empezar.
+    $sincronizar = { & repadmin.exe /syncall $env:COMPUTERNAME /A /e 2>&1 | Out-Null }
+    & $sincronizar
     $cache = @{}
     foreach ($g in $Grupos) {
         $accion = 'Existente'
@@ -137,7 +142,11 @@ $bloqueGruposDL = {
             $ok = $false
             for ($i = 1; $i -le 10 -and -not $ok; $i++) {
                 try { Set-ADGroup -Identity $g.Nombre -Add @{ member = $deseados[$dn].DistinguishedName }; $ok = $true }
-                catch { if ($i -eq 10) { throw "No se pudo agregar $dn a $($g.Nombre): $($_.Exception.Message)" }; Start-Sleep -Seconds 30 }
+                catch {
+                    if ($i -eq 10) { throw "No se pudo agregar $dn a $($g.Nombre): $($_.Exception.Message). Revise la replicación entre los DC (repadmin /replsummary en $env:COMPUTERNAME)." }
+                    Start-Sleep -Seconds 30
+                    & $sincronizar
+                }
             }
         }
         foreach ($dn in $quitar) { Set-ADGroup -Identity $g.Nombre -Remove @{ member = $dn } }

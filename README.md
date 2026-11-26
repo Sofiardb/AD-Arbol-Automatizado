@@ -93,7 +93,8 @@ modules/
   07-Validacion/Validacion.psm1            Paso 7: comparaciones diseño vs. estado real (funciones puras)
   07-Validacion/Invoke-Validacion.ps1        recolección, pruebas de acceso reales e informe HTML
 demo/Probar-Permisos.ps1           Script que ejecuta el usuario en el cliente durante la demostración
-tools/Preparar-Equipo.ps1          Preparación única de cada VM antes del despliegue
+tools/Preparar-Equipo.ps1          Preparación única de cada VM según su rol (IP, remoting, firewall, cuentas)
+tools/Crear-ISO.ps1                Opcional: empaqueta el proyecto en una ISO para copiarlo a las VM (se ejecuta en el anfitrión)
 tests/Test-Offline.ps1             Pruebas automatizadas que no necesitan servidores
 ```
 
@@ -107,7 +108,7 @@ La carpeta `output/` la genera el sistema en cada ejecución y no forma parte de
 |---|---|---|
 | **1 · Diseño** | Valida la configuración (frena antes de tocar nada si hay errores) y calcula el diseño completo: nombres e IP finales, DNS de cada equipo, OU, cuentas (con desambiguación de homónimos y quita de acentos), grupos AGUDLP, permisos, matriz de acceso y escenas de la demostración. Genera `diseno.json`, tablas CSV, diagramas Mermaid, `diseno.html` y `guion-demostracion.html`. | — |
 | **2 · Despliegue** | Prepara DC-RAIZ y DC-HIJO (roles, zona horaria, nombre, IP fija, DNS inicial, reinicio). Crea el bosque y el dominio padre en DC-RAIZ; crea el dominio hijo en DC-HIJO con delegación DNS en el padre. Configura el DNS definitivo y verifica la confianza padre-hijo y los maestros de operaciones. | `Install-WindowsFeature`, `Install-ADDSForest`, `Install-ADDSDomain`, `Get-ADTrust` |
-| **3 · DNS** | Zona inversa integrada en AD con replicación al bosque, registros PTR, reenviadores (el hijo reenvía al padre), delegación del hijo, envejecimiento y limpieza (scavenging). Verifica desde ambos DC los registros SRV de localización de DC, Kerberos y catálogo global, y los registros A y PTR. | `Add-DnsServerPrimaryZone`, `Add-DnsServerZoneDelegation`, `Set-DnsServerForwarder`, `Resolve-DnsName` |
+| **3 · DNS** | Zona inversa integrada en AD con replicación al bosque, registros PTR, reenviadores (el hijo reenvía al padre), delegación del hijo, envejecimiento y limpieza (scavenging). Quita los registros del hijo que hayan quedado en la zona del padre durante la promoción y vacía la caché DNS. Verifica desde ambos DC los registros SRV de localización de DC, Kerberos y catálogo global, y los registros A y PTR. | `Add-DnsServerPrimaryZone`, `Add-DnsServerZoneDelegation`, `Set-DnsServerForwarder`, `Resolve-DnsName` |
 | **4 · Estructura y cuentas** | En el padre: una OU por área, OU `Grupos` y OU `Equipos`, y alta o actualización de las 52 cuentas con sus atributos (cargo, área, empresa, teléfono, oficina). En el hijo: OU `Grupos`. Si una cuenta cambia de área, la mueve; si hay cuentas que no están en el CSV, las informa sin borrarlas. | `New-ADOrganizationalUnit`, `New-ADUser`, `Set-ADUser`, `Move-ADObject` |
 | **5 · Acceso entre dominios** | Grupos globales por área en el padre; grupos de dominio local por recurso y nivel en el hijo, con los grupos globales del padre como miembros; carpetas compartidas en DC-HIJO con permisos de recurso compartido y NTFS. Reconcilia: quita lo que sobra y agrega lo que falta. | `New-ADGroup`, `Add-ADGroupMember`, `New-SmbShare`, `Grant-SmbShareAccess`, `Set-Acl` |
 | **6 · Cliente** | Une CLIENTE01 al dominio padre (OU `Equipos`) y le instala el kit de demostración: script **Probar mis permisos** y accesos directos a los recursos en el escritorio. | `Add-Computer` |
@@ -169,21 +170,40 @@ Se probó en **VirtualBox** con una red *solo anfitrión* `192.168.10.0/24` sin 
 
 ### Preparación de las VM (una sola vez)
 
-1. Instalar cada VM desde su ISO (sin clonar) y configurar la IP fija de la tabla, la máscara `255.255.255.0` y la puerta de enlace `192.168.10.1`.
-2. En **cada VM** (servidores y cliente), en PowerShell como administrador:
+1. Instalar cada VM desde su ISO (sin clonar), con un único adaptador conectado a la red *solo anfitrión*. No hace falta configurar la IP ni el nombre: de eso se encargan el script de preparación y el despliegue.
+2. Copiar la carpeta del proyecto a cada VM por el medio que se tenga disponible (pendrive, carpeta compartida, etc.), por ejemplo a `C:\AD-Arbol-Automatizado`. Si no hay otra opción —la red solo anfitrión no tiene Internet y las Guest Additions no siempre se instalan—, se puede empaquetar en una ISO desde el **anfitrión** y montarla en cada VM (*Dispositivos → Unidades ópticas*):
+   ```powershell
+   .\tools\Crear-ISO.ps1        # crea AD-Arbol-Automatizado.iso junto a la carpeta del proyecto (sin .git ni output)
+   ```
+   Los archivos copiados desde un CD quedan de solo lectura y bloqueados; en ese caso:
+   ```powershell
+   attrib -r C:\AD-Arbol-Automatizado\* /s /d
+   Get-ChildItem C:\AD-Arbol-Automatizado -Recurse | Unblock-File
+   ```
+3. En cada VM, ejecutar, en PowerShell como administrador, el script de preparación indicando el rol del equipo:
    ```powershell
    Set-ExecutionPolicy -Scope Process Bypass -Force
-   .\tools\Preparar-Equipo.ps1
+   .\tools\Preparar-Equipo.ps1 -Rol DCRaiz     # servidor del dominio padre  -> 192.168.10.101
+   .\tools\Preparar-Equipo.ps1 -Rol DCHijo     # servidor del dominio hijo   -> 192.168.10.102
+   .\tools\Preparar-Equipo.ps1 -Rol Cliente    # cliente de la demostración  -> 192.168.10.150
+   .\tools\Preparar-Equipo.ps1 -Rol Admin      # equipo de administración    -> 192.168.10.200 (al final)
    ```
-   Pide la contraseña del Administrador, que tiene que ser **la misma en todas las VM** y cumplir la complejidad. Deja la red como privada, habilita PowerShell Remoting con inicio automático, abre el puerto de WinRM y habilita la administración remota con cuentas locales. *Solo para laboratorio.*
-3. En `config/lab.psd1`, ajustar `NivelFuncional` a la versión de los servidores (`Win2012`, `Win2012R2` o `WinThreshold` para 2016 o posterior) y `UsuarioAdministrador` (`Administrator` o `Administrador`, según el idioma de los servidores).
+   Sin `-Rol` muestra un menú. Las IP, la máscara y la puerta de enlace se toman de `config/lab.psd1`.
+
+   | Rol | Qué configura |
+   |---|---|
+   | Todos | IP fija, red como privada, PowerShell Remoting con inicio automático, firewall para WinRM y ping |
+   | DCRaiz, DCHijo, Cliente | Cuenta Administrador integrada activa con la contraseña indicada (**la misma en las tres VM**) y administración remota con cuentas locales |
+   | Admin | Red del laboratorio en `TrustedHosts` y prueba de conexión WinRM con los otros tres equipos |
+
+   Se puede volver a ejecutar sin efectos indeseados; no cambia la IP de un equipo que ya es controlador de dominio o que ya está unido al dominio. *Solo para laboratorio.*
+4. En `config/lab.psd1`, ajustar `NivelFuncional` a la versión de los servidores (`Win2012`, `Win2012R2` o `WinThreshold` para 2016 o posterior) y `UsuarioAdministrador` (`Administrator` o `Administrador`, según el idioma de los servidores; el script de preparación avisa si no coincide).
+5. Tomar una instantánea de las cuatro VM.
 
 ### Ejecución (en ADMIN, PowerShell como administrador)
 
 ```powershell
 Set-ExecutionPolicy -Scope Process Bypass -Force
-Start-Service WinRM
-Set-Item WSMan:\localhost\Client\TrustedHosts -Value '192.168.10.*' -Force
 
 .\Deploy.ps1 -SoloDiseno     # paso 1: solo calcula el diseño, no toca las VM
 .\Deploy.ps1 -WhatIf         # muestra qué haría cada paso, sin cambiar nada
@@ -198,7 +218,7 @@ Set-Item WSMan:\localhost\Client\TrustedHosts -Value '192.168.10.*' -Force
 | `-WhatIf` | Simulación de los pasos 2 a 7 |
 | `-Reiniciar` | Ignora el estado guardado y empieza de nuevo |
 
-Duración aproximada: pasos 2 y 3 (creación de los dominios), entre 30 y 40 minutos; pasos 4 a 7, entre 8 y 12 minutos.
+Duración medida en el laboratorio: unos **18 minutos** el despliegue completo. La mayor parte corresponde a los pasos 2 y 3 (creación de los dominios, con sus reinicios); los pasos 4 a 7 llevan unos 6 minutos.
 
 ---
 
@@ -251,13 +271,15 @@ Resultado: **51/51**.
 ## 10. Decisiones técnicas
 
 - **Una sola contraseña.** Se pide una vez y se guarda cifrada (DPAPI) durante el despliegue. El Administrador local del primer DC de cada dominio pasa a ser el administrador del dominio, por eso las credenciales de dominio se derivan de ella.
-- **Reinicios controlados.** El cambio de IP se delega en una tarea programada que corre como SYSTEM, porque corta la sesión remota. Las promociones a DC programan su propio reinicio en la misma sesión. El orquestador espera a que cada servidor vuelva antes de seguir.
+- **Reinicios controlados.** El cambio de IP se delega en una tarea programada que corre como SYSTEM, porque corta la sesión remota; la tarea se ejecuta aunque el equipo informe que funciona con batería (VirtualBox le transmite a la VM el estado de la batería del anfitrión). Las promociones a DC programan su propio reinicio en la misma sesión. El orquestador espera a que cada servidor vuelva antes de seguir.
+- **Anidamiento entre dominios.** DC-HIJO valida los grupos globales del padre contra su copia del catálogo global, que se actualiza por replicación: antes de anidarlos, el paso 5 fuerza la replicación entrante (`repadmin /syncall`) y reintenta si hace falta.
 - **Idempotencia y reconciliación.** Cada operación compara el estado real con el deseado antes de actuar, y la pertenencia a grupos y los permisos quedan exactamente como dicen los CSV.
 - **Compatibilidad entre versiones e idiomas:**
   - las cuentas integradas se identifican por SID;
   - las sesiones remotas se abren con el idioma instalado en cada servidor;
   - la zona horaria se cambia con `tzutil`;
-  - el archivo de configuración se lee en modo de lenguaje restringido (solo datos) y sin requerir PowerShell 5.
+  - el archivo de configuración se lee en modo de lenguaje restringido (solo datos) y sin requerir PowerShell 5;
+  - las rutas por defecto se calculan dentro de cada script, porque en PowerShell 3.0 y 4.0 `$PSScriptRoot` puede llegar vacío a los parámetros.
 - **Validación independiente de la implementación.** Las comparaciones son funciones puras sobre datos recolectados, por eso se pueden probar sin laboratorio. Además, las pruebas de acceso usan cuentas reales con una sesión nueva por cuenta, igual que un usuario en el cliente.
 
 > La contraseña de la demostración (`ContrasenaDemo` en `lab.psd1`) y `tools/Preparar-Equipo.ps1` simplifican el laboratorio. Si se quita `ContrasenaDemo`, cada cuenta recibe una contraseña aleatoria que debe cambiarse en el primer inicio de sesión.

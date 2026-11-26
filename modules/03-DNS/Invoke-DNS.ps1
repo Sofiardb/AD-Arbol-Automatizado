@@ -164,6 +164,26 @@ $bloqueVerificar = {
     }
 }
 
+$bloqueLimpiarDelegacion = {
+    # Durante la promoción, DC-HIJO usa como DNS a DC-RAIZ y registra sus SRV (por ejemplo
+    # _ldap._tcp.dc._msdcs.recursos) DENTRO de la zona del padre. Esos registros quedan debajo del
+    # punto de delegación y hacen que DC-RAIZ responda "el nombre no existe" en lugar de consultar
+    # al DNS del hijo. Se borran (se conservan el NS de la delegación y los A de pegado) y se vacía la caché.
+    param([string]$Raiz, [string]$Etiqueta)
+    $ErrorActionPreference = 'Stop'
+    $sobrantes = @(Get-DnsServerResourceRecord -ZoneName $Raiz |
+            Where-Object { $_.HostName -like "*.$Etiqueta" -and $_.RecordType -notin 'A', 'AAAA', 'NS' })
+    foreach ($r in $sobrantes) { Remove-DnsServerResourceRecord -ZoneName $Raiz -InputObject $r -Force }
+    Clear-DnsServerCache -Force
+    Clear-DnsClientCache
+    if ($sobrantes.Count) { "Se quitaron $($sobrantes.Count) registro(s) del hijo que habían quedado en la zona $Raiz." }
+}
+
+$bloqueLimpiarCache = {
+    Clear-DnsServerCache -Force
+    Clear-DnsClientCache
+}
+
 $bloqueReregistrar = {
     & nltest.exe /dsregdns | Out-Null
     & ipconfig.exe /registerdns | Out-Null
@@ -192,6 +212,10 @@ $dcs = @(
 )
 $intentosMax = 3
 for ($intento = 1; $intento -le $intentosMax; $intento++) {
+    # Antes de cada ronda: registros del hijo en la zona del padre y respuestas negativas en caché
+    $msg = Invoke-EnServidor -Equipo $srvRaiz.IPFinal -Credencial $cred.Raiz -Bloque $bloqueLimpiarDelegacion -Argumentos @($domRaiz.FQDN, $domHijo.Etiqueta) -Descripcion 'limpiar registros bajo la delegación y caché DNS'
+    foreach ($m in @($msg)) { if ($m) { Write-Log "  $m" -Nivel Ok } }
+    Invoke-EnServidor -Equipo $srvHijo.IPFinal -Credencial $cred.Hijo -Bloque $bloqueLimpiarCache -Descripcion 'vaciar caché DNS' | Out-Null
     $resultados = @(foreach ($dc in $dcs) {
             Invoke-EnServidor -Equipo $dc.Servidor.IPFinal -Credencial $dc.Credencial -Bloque $bloqueVerificar -Argumentos @($consultas.ToArray(), $dc.Servidor.IPFinal) -Descripcion "$($consultas.Count) consultas DNS"
         })

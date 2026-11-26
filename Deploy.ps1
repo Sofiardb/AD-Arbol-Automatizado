@@ -46,11 +46,17 @@ param(
     [switch]$SoloDiseno,
     [switch]$SoloValidar,
     [switch]$Reiniciar,
-    [string]$RutaConfig = (Join-Path $PSScriptRoot 'config'),
-    [string]$RutaSalida = (Join-Path $PSScriptRoot 'output')
+    [string]$RutaConfig,   # por defecto: .\config
+    [string]$RutaSalida    # por defecto: .\output
 )
 
 $ErrorActionPreference = 'Stop'
+# En PowerShell 3.0 y 4.0, $PSScriptRoot puede llegar vacío a los valores por defecto de los parámetros
+# (por ejemplo, al ejecutar con powershell.exe -File desde un acceso directo): se calcula acá.
+$raiz = $PSScriptRoot
+if (-not $raiz) { $raiz = Split-Path -Parent $MyInvocation.MyCommand.Path }
+if (-not $RutaConfig) { $RutaConfig = Join-Path $raiz 'config' }
+if (-not $RutaSalida) { $RutaSalida = Join-Path $raiz 'output' }
 # Funciona con Windows PowerShell 3.0, 4.0, 5.1 y PowerShell 7 en Windows.
 $esWindows = [System.Environment]::OSVersion.Platform -eq 'Win32NT'
 if (-not $esWindows -and -not ($SoloDiseno -or [bool]$WhatIfPreference)) {
@@ -59,7 +65,7 @@ if (-not $esWindows -and -not ($SoloDiseno -or [bool]$WhatIfPreference)) {
 # Con -WhatIf igual se escriben los archivos locales (log, diseño); solo se simulan los pasos 2 a 7.
 $simular = [bool]$WhatIfPreference
 $WhatIfPreference = $false
-$modulos = Join-Path $PSScriptRoot 'modules'
+$modulos = Join-Path $raiz 'modules'
 Import-Module (Join-Path $modulos '00-Comun/Comun.psm1') -Force -DisableNameChecking
 
 if (-not (Test-Path $RutaSalida)) { New-Item -Path $RutaSalida -ItemType Directory -Force | Out-Null }

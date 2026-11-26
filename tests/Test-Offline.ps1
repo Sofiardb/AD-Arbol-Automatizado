@@ -218,6 +218,7 @@ function Find-Objeto([string]$Id, [string]$Clase, [string]$Server) {
     @((Get-Almacen $Server) | Where-Object { $_.Clase -eq $Clase -and ($_.DistinguishedName -eq $id -or $_.SamAccountName -eq $id) })[0]
 }
 function Import-Module { param([Parameter(Position = 0)]$Name) }
+function repadmin.exe { }   # el paso 5 fuerza la replicación con repadmin: en el AD simulado no hace nada
 function Get-ADOrganizationalUnit { param($Identity) $o = Find-Objeto $Identity 'ou'; if (-not $o) { throw "OU no encontrada: $Identity" }; $o }
 function New-ADOrganizationalUnit { param($Name, $Path, $Description, $ProtectedFromAccidentalDeletion)
     [void](Get-Almacen).Add([pscustomobject]@{ Clase = 'ou'; Name = $Name; DistinguishedName = "OU=$Name,$Path"; SamAccountName = $null }) }

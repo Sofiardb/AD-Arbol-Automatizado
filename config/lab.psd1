@@ -35,6 +35,10 @@
     # Opcional: Nombre = '...', IPFinal = '...', Dominio = 'Raiz' | 'Hijo'
     Cliente = @{ IPActual = '192.168.10.150' }
 
+    # --- Equipo de administración (ejecuta Deploy.ps1; no se une al dominio) ---
+    # Solo lo usa tools\Preparar-Equipo.ps1 -Rol Admin para fijarle la IP.
+    EquipoAdmin = @{ IP = '192.168.10.200' }
+
     # --- Áreas de la empresa (una OU y un grupo global por área, en el dominio padre) ---
     Areas = @(
         'Gerencia', 'Administracion', 'Finanzas', 'RRHH', 'IT', 'Legales',

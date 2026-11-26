@@ -132,7 +132,10 @@ Restart-Computer -Force
     $argumentos = "-NoProfile -ExecutionPolicy Bypass -File `"$ruta`" -IPActual $IPActual -IPFinal $IPFinal -Prefijo $Prefijo -Gateway $Gateway -Dns $($Dns -join ',')"
     $accion = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument $argumentos
     $principal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest
-    Register-ScheduledTask -TaskName 'AD-CambioIP' -Action $accion -Principal $principal -Force | Out-Null
+    # Sin esto, Windows no inicia la tarea si cree que el equipo funciona con batería
+    # (VirtualBox le informa a la VM el estado de la batería del anfitrión).
+    $config = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable
+    Register-ScheduledTask -TaskName 'AD-CambioIP' -Action $accion -Principal $principal -Settings $config -Force | Out-Null
     Start-ScheduledTask -TaskName 'AD-CambioIP'
 }
 
