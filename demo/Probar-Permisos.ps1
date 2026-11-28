@@ -113,7 +113,7 @@ Write-Linea ('-' * 96) 'DarkGray'
 
 # --- Explicación ---
 Write-Linea ''
-Write-Linea '  Por qué (AGUDLP: cuenta -> grupo global del padre -> grupo de dominio local del hijo -> permisos):' 'Cyan'
+Write-Linea '  Por qué (AGDLP: cuenta -> grupo global del padre -> grupo de dominio local del hijo -> permisos):' 'Cyan'
 foreach ($f in $filas | Where-Object { $_.Via }) { Write-Linea ("    {0,-20} {1} -> {2}" -f $f.Recurso, $cuenta, $f.Via) }
 if (-not @($filas | Where-Object { $_.Via }).Count) { Write-Linea '    Ningún grupo global de esta cuenta es miembro de un grupo DL-*: no tiene acceso a ningún recurso.' 'Yellow' }
 Write-Linea ''

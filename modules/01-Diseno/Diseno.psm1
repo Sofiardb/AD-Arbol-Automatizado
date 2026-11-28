@@ -5,12 +5,12 @@
 
 .DESCRIPTION
     Modelo: las CUENTAS se centralizan en el dominio padre y los RECURSOS en el dominio hijo.
-    Los permisos se asignan en un solo sentido: cuentas del padre -> recursos del hijo (AGUDLP).
+    Los permisos se asignan en un solo sentido: cuentas del padre -> recursos del hijo (AGDLP).
 
     A partir de la configuración mínima del usuario:
       1. Test-ConfigLab        valida la configuración (frena antes de tocar nada si hay errores).
       2. Get-DisenoDerivado    calcula todos los valores derivados: nombres, IP finales, DNS, OU,
-                               cuentas, grupos AGUDLP, recursos, permisos y escenas de la demostración.
+                               cuentas, grupos AGDLP, recursos, permisos y escenas de la demostración.
       3. Export-Diseno         genera diseno.json (lo usan los pasos 2 a 7), tablas CSV, diagramas
                                Mermaid, un resumen HTML y el guion de la demostración.
 #>
@@ -344,8 +344,8 @@ function Get-DisenoDerivado {
     # --- OU: áreas + Grupos (+ Equipos) en el padre; Grupos en el hijo ---
     $ous = New-Object System.Collections.Generic.List[object]
     foreach ($area in $areas) { $ous.Add([ordered]@{ Dominio = 'Raiz'; DominioFQDN = $fqdnRaiz; Nombre = $area; DN = "OU=$area,$($dominios.Raiz.DN)"; Padre = $dominios.Raiz.DN; Descripcion = "Cuentas del área $area" }) }
-    $ous.Add([ordered]@{ Dominio = 'Raiz'; DominioFQDN = $fqdnRaiz; Nombre = 'Grupos'; DN = "OU=Grupos,$($dominios.Raiz.DN)"; Padre = $dominios.Raiz.DN; Descripcion = 'Grupos globales por área (G de AGUDLP)' })
-    $ous.Add([ordered]@{ Dominio = 'Hijo'; DominioFQDN = $fqdnHijo; Nombre = 'Grupos'; DN = "OU=Grupos,$($dominios.Hijo.DN)"; Padre = $dominios.Hijo.DN; Descripcion = 'Grupos de dominio local por recurso y nivel (DL de AGUDLP)' })
+    $ous.Add([ordered]@{ Dominio = 'Raiz'; DominioFQDN = $fqdnRaiz; Nombre = 'Grupos'; DN = "OU=Grupos,$($dominios.Raiz.DN)"; Padre = $dominios.Raiz.DN; Descripcion = 'Grupos globales por área (G de AGDLP)' })
+    $ous.Add([ordered]@{ Dominio = 'Hijo'; DominioFQDN = $fqdnHijo; Nombre = 'Grupos'; DN = "OU=Grupos,$($dominios.Hijo.DN)"; Padre = $dominios.Hijo.DN; Descripcion = 'Grupos de dominio local por recurso y nivel (DL de AGDLP)' })
     if ($cliente) {
         $d = $dominios[$cliente.DominioClave]
         $ous.Add([ordered]@{ Dominio = $cliente.DominioClave; DominioFQDN = $d.FQDN; Nombre = 'Equipos'; DN = "OU=Equipos,$($d.DN)"; Padre = $d.DN; Descripcion = 'Equipos cliente' })
@@ -489,7 +489,7 @@ function ConvertTo-TablaHtml {
 function Get-DiagramaLogico {
     <#
     .SYNOPSIS
-        Estructura lógica: bosque, dominio padre (cuentas) e hijo (recursos), y la cadena AGUDLP
+        Estructura lógica: bosque, dominio padre (cuentas) e hijo (recursos), y la cadena AGDLP
         resumida, con un ejemplo concreto tomado de la escena 1 y 2 de la demostración.
         La matriz completa área x recurso va en tablas (un diagrama con todas las relaciones sería ilegible).
     #>
@@ -605,7 +605,7 @@ function Export-GuionDemo {
 <html lang="es"><head><meta charset="utf-8"><title>Guion de la demostración – $($r.FQDN)</title>$($script:EstiloHtml)</head><body>
 <h1>Guion de la demostración</h1>
 <p><b>$(& $enc $Diseno.Parametros.Empresa)</b> · cuentas en <b>$($r.FQDN)</b> (padre) · recursos en <b>$($h.FQDN)</b> (hijo) · equipo de la demostración: <b>$(& $enc $nombreCli)</b></p>
-<p>Objetivo: mostrar que usuarios con cuenta en el dominio padre acceden a recursos del dominio hijo con los permisos que les da su área, mediante la estrategia AGUDLP
+<p>Objetivo: mostrar que usuarios con cuenta en el dominio padre acceden a recursos del dominio hijo con los permisos que les da su área, mediante la estrategia AGDLP
 (cuenta &rarr; grupo <b>G</b>lobal en el padre &rarr; grupo de <b>D</b>ominio <b>L</b>ocal en el hijo &rarr; <b>P</b>ermisos del recurso compartido y NTFS).</p>
 
 <h2>Parte 1 – Creación automatizada de la estructura</h2>
@@ -718,7 +718,7 @@ $([System.Net.WebUtility]::HtmlEncode($fisico))
 <h2>Equipos</h2>$(ConvertTo-TablaHtml $tablaServidores @('Equipo','Funcion','Dominio','IP actual','IP final','DNS','Roles instalados'))
 <h2>Matriz de acceso por área</h2>$(ConvertTo-TablaHtml $tablaAreas $columnasAreas)
 <h2>Usuarios ($(@($Diseno.Usuarios).Count))</h2>$(ConvertTo-TablaHtml $tablaUsuarios @('Usuario','Cuenta','UPN','Area','Cargo','Oficina'))
-<h2>Grupos (AGUDLP)</h2>$(ConvertTo-TablaHtml $tablaGrupos @('Grupo','Ambito','Dominio','Miembros'))
+<h2>Grupos (AGDLP)</h2>$(ConvertTo-TablaHtml $tablaGrupos @('Grupo','Ambito','Dominio','Miembros'))
 <h2>Permisos</h2>$(ConvertTo-TablaHtml $tablaPermisos @('Recurso','Tipo','Cuenta','Permiso'))
 </body></html>
 "@

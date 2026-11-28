@@ -1,7 +1,7 @@
 ﻿#Requires -Version 3.0
 <#
 .SYNOPSIS
-    Paso 5 – Acceso de cuentas del dominio padre a recursos del dominio hijo con AGUDLP (objetivo específico 5).
+    Paso 5 – Acceso de cuentas del dominio padre a recursos del dominio hijo con AGDLP (objetivo específico 5).
 
 .DESCRIPTION
     Las cuentas están centralizadas en el dominio PADRE y los recursos en el dominio HIJO;

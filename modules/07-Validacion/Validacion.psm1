@@ -200,7 +200,7 @@ function Test-Estructura {
 }
 
 # =====================================================================
-#  Grupos (AGUDLP)
+#  Grupos (AGDLP)
 # =====================================================================
 function Get-DNUsuario { param($Diseno, [string]$Clave, [string]$Sam)
     $u = @($Diseno.Usuarios | Where-Object { $_.Dominio -eq $Clave -and $_.Sam -eq $Sam }) | Select-Object -First 1
@@ -210,7 +210,7 @@ function Get-DNUsuario { param($Diseno, [string]$Clave, [string]$Sam)
 function Test-Grupos {
     [CmdletBinding()]
     param([Parameter(Mandatory)]$Diseno, [Parameter(Mandatory)]$EstadoRaiz, [Parameter(Mandatory)]$EstadoHijo)
-    $cat = 'Grupos (AGUDLP)'
+    $cat = 'Grupos (AGDLP)'
     $estados = @{ Raiz = $EstadoRaiz; Hijo = $EstadoHijo }
     $dnGG = @{}
 

@@ -16,7 +16,7 @@ A partir de **un archivo de configuración y dos CSV**, un único comando (`.\De
 
 1. Un **bosque de Active Directory** con un **dominio padre** (`andina.local`) y un **dominio hijo** (`recursos.andina.local`), cada uno con su controlador de dominio y **DNS integrado**.
 2. La **estructura lógica** del dominio padre (una OU por área) y el **alta masiva de cuentas** desde un CSV.
-3. Los **recursos compartidos** en el dominio hijo y el **acceso de las cuentas del padre** a esos recursos según una matriz de permisos, aplicando la estrategia **AGUDLP** con permisos de **recurso compartido y NTFS**.
+3. Los **recursos compartidos** en el dominio hijo y el **acceso de las cuentas del padre** a esos recursos según una matriz de permisos, aplicando la estrategia **AGDLP** con permisos de **recurso compartido y NTFS**.
 4. Un **equipo cliente** unido al dominio, preparado para demostrar los permisos iniciando sesión con distintos usuarios.
 5. Una **validación automática** que compara lo desplegado con el diseño, prueba el acceso real de una cuenta por área a cada recurso y genera un **informe HTML**.
 
@@ -34,7 +34,7 @@ El usuario ingresa **una sola contraseña**; todo lo demás (nombres, IP, OU, cu
 | 2 | Automatizar la preparación de servidores y la creación del dominio raíz e hijo | `02-Despliegue` |
 | 3 | Automatizar la configuración y verificación de DNS (zonas, delegación, SRV, zonas inversas) | `03-DNS` |
 | 4 | Automatizar la estructura lógica y el alta masiva de cuentas | `04-Estructura` |
-| 5 | Dar acceso a las cuentas del padre sobre recursos del hijo con AGUDLP y permisos NTFS y de recurso compartido | `05-AccesoEntreDominios` (+ `06-Cliente` para la demostración) |
+| 5 | Dar acceso a las cuentas del padre sobre recursos del hijo con AGDLP y permisos NTFS y de recurso compartido | `05-AccesoEntreDominios` (+ `06-Cliente` para la demostración) |
 | 6 | Validar automáticamente y documentar | `07-Validacion` |
 
 ---
@@ -56,7 +56,7 @@ El usuario ingresa **una sola contraseña**; todo lo demás (nombres, IP, OU, cu
 ```
 
 - **Las cuentas se centralizan en el dominio padre** y **los recursos en el dominio hijo**. Los permisos se asignan **en un solo sentido**: cuentas del padre → recursos del hijo.
-- **AGUDLP**: **A**ccount (cuenta, en el padre) → **G**lobal group por área (en el padre) → **D**omain **L**ocal group por recurso y nivel (en el hijo) → **P**ermissions (recurso compartido y NTFS, en DC-HIJO). Un grupo de dominio local admite como miembros grupos globales de cualquier dominio del bosque; la confianza padre-hijo (automática, bidireccional y transitiva) permite resolverlos.
+- **AGDLP**: **A**ccount (cuenta, en el padre) → **G**lobal group por área (en el padre) → **D**omain **L**ocal group por recurso y nivel (en el hijo) → **P**ermissions (recurso compartido y NTFS, en DC-HIJO). Un grupo de dominio local admite como miembros grupos globales de cualquier dominio del bosque; la confianza padre-hijo (automática, bidireccional y transitiva) permite resolverlos. No se usa el nivel de grupo universal (AGUDLP) porque todas las cuentas están en un solo dominio, el padre.
 - Ninguna cuenta recibe permisos directos: cambiar lo que puede hacer un usuario es cambiarlo de grupo, y cambiar lo que puede hacer un área es editar `accesos.csv` y volver a ejecutar el paso 5.
 
 ### Permisos (enfoque "por grupo")
@@ -88,7 +88,7 @@ modules/
   02-Despliegue/Invoke-Despliegue.ps1      Paso 2: servidores, bosque y dominio hijo
   03-DNS/Invoke-DNS.ps1                    Paso 3: zonas, registros, reenviadores, delegación, verificación
   04-Estructura/Invoke-Estructura.ps1      Paso 4: OU y alta masiva de cuentas
-  05-AccesoEntreDominios/Invoke-Acceso.ps1 Paso 5: grupos AGUDLP, recursos compartidos y NTFS
+  05-AccesoEntreDominios/Invoke-Acceso.ps1 Paso 5: grupos AGDLP, recursos compartidos y NTFS
   06-Cliente/Invoke-Cliente.ps1            Paso 6: unión del cliente al dominio y kit de demostración
   07-Validacion/Validacion.psm1            Paso 7: comparaciones diseño vs. estado real (funciones puras)
   07-Validacion/Invoke-Validacion.ps1        recolección, pruebas de acceso reales e informe HTML
@@ -106,7 +106,7 @@ La carpeta `output/` la genera el sistema en cada ejecución y no forma parte de
 
 | Paso | Qué hace | Cmdlets principales |
 |---|---|---|
-| **1 · Diseño** | Valida la configuración (frena antes de tocar nada si hay errores) y calcula el diseño completo: nombres e IP finales, DNS de cada equipo, OU, cuentas (con desambiguación de homónimos y quita de acentos), grupos AGUDLP, permisos, matriz de acceso y escenas de la demostración. Genera `diseno.json`, tablas CSV, diagramas Mermaid, `diseno.html` y `guion-demostracion.html`. | — |
+| **1 · Diseño** | Valida la configuración (frena antes de tocar nada si hay errores) y calcula el diseño completo: nombres e IP finales, DNS de cada equipo, OU, cuentas (con desambiguación de homónimos y quita de acentos), grupos AGDLP, permisos, matriz de acceso y escenas de la demostración. Genera `diseno.json`, tablas CSV, diagramas Mermaid, `diseno.html` y `guion-demostracion.html`. | — |
 | **2 · Despliegue** | Prepara DC-RAIZ y DC-HIJO (roles, zona horaria, nombre, IP fija, DNS inicial, reinicio). Crea el bosque y el dominio padre en DC-RAIZ; crea el dominio hijo en DC-HIJO con delegación DNS en el padre. Configura el DNS definitivo y verifica la confianza padre-hijo y los maestros de operaciones. | `Install-WindowsFeature`, `Install-ADDSForest`, `Install-ADDSDomain`, `Get-ADTrust` |
 | **3 · DNS** | Zona inversa integrada en AD con replicación al bosque, registros PTR, reenviadores (el hijo reenvía al padre), delegación del hijo, envejecimiento y limpieza (scavenging). Quita los registros del hijo que hayan quedado en la zona del padre durante la promoción y vacía la caché DNS. Verifica desde ambos DC los registros SRV de localización de DC, Kerberos y catálogo global, y los registros A y PTR. | `Add-DnsServerPrimaryZone`, `Add-DnsServerZoneDelegation`, `Set-DnsServerForwarder`, `Resolve-DnsName` |
 | **4 · Estructura y cuentas** | En el padre: una OU por área, OU `Grupos` y OU `Equipos`, y alta o actualización de las 52 cuentas con sus atributos (cargo, área, empresa, teléfono, oficina). En el hijo: OU `Grupos`. Si una cuenta cambia de área, la mueve; si hay cuentas que no están en el CSV, las informa sin borrarlas. | `New-ADOrganizationalUnit`, `New-ADUser`, `Set-ADUser`, `Move-ADObject` |
@@ -233,7 +233,7 @@ Duración medida en el laboratorio: unos **18 minutos** el despliegue completo. 
 | 3 | `ANDINA\lortiz` (Administración) | Lista-Precios | **Sin acceso**: no puede abrir la carpeta |
 | 4 | `ANDINA\cnunez` (Gerencia) | Comunicados | **Modificar**: el mismo usuario sí escribe en otro recurso |
 
-En el escritorio del cliente, **Probar mis permisos** (`demo/Probar-Permisos.ps1`) muestra la cuenta, sus grupos globales y una tabla con lo que puede hacer en cada recurso, y explica la cadena AGUDLP que le da cada permiso. Los grupos de dominio local del hijo no aparecen en `whoami /groups` en el cliente porque se agregan al token recién cuando la cuenta se autentica en DC-HIJO.
+En el escritorio del cliente, **Probar mis permisos** (`demo/Probar-Permisos.ps1`) muestra la cuenta, sus grupos globales y una tabla con lo que puede hacer en cada recurso, y explica la cadena AGDLP que le da cada permiso. Los grupos de dominio local del hijo no aparecen en `whoami /groups` en el cliente porque se agregan al token recién cuando la cuenta se autentica en DC-HIJO.
 
 ---
 
